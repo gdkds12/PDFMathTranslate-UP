@@ -16,6 +16,7 @@ import asyncio
 import unicodedata # <<< 추가: 파일명 정규화용
 import string # <<< 추가: 유효한 문자 확인용
 from logging.handlers import RotatingFileHandler # <<< 추가: 파일 로깅 핸들러
+import threading # <<< threading 모듈 임포트
 
 # .env 파일 로드 (translator.py에서도 로드하지만, 앱 시작 시에도 명시적으로 로드하는 것이 안전)
 load_dotenv()
@@ -56,6 +57,12 @@ pdf2zh_logger = logging.getLogger('pdf2zh')
 
 logger.info("Application starting up. Logging configured.") # 시작 로그
 # --- 로깅 설정 끝 ---
+
+# --- 동시성 제어를 위한 세마포 생성 ---
+MAX_CONCURRENT_JOBS = 10
+translation_semaphore = threading.Semaphore(MAX_CONCURRENT_JOBS)
+logger.info(f"Translation semaphore initialized with max concurrent jobs: {MAX_CONCURRENT_JOBS}")
+# --- 세마포 생성 끝 ---
 
 # --- 페이지당 평균 번역 시간 상수 정의 ---
 AVERAGE_SECONDS_PER_PAGE = 15.0 # <<< 15초로 변경
@@ -244,7 +251,7 @@ def extract_job_log(job_id: str, source_log_path: Path, output_log_path: Path):
         logger.exception(f"Failed to extract logs for job {job_id}: {e}")
 # --- 로그 추출 함수 끝 ---
 
-# --- perform_translation_sync 함수 수정 (로깅 및 로그 저장 추가) ---
+# --- perform_translation_sync 함수 수정 (세마포 적용) ---
 def perform_translation_sync(
     input_path: Path,
     job_id: str,
@@ -252,25 +259,29 @@ def perform_translation_sync(
     pages_str: str | None,
     custom_instructions: str
 ):
-    """ 실제 번역 작업을 *동기적으로* 수행하는 함수 (로깅 강화 및 로그 저장) """
+    """ 실제 번역 작업을 *동기적으로* 수행하는 함수 (세마포로 동시성 제어) """
     start_time = time.time()
     estimated_total_time: float | None = None
-    job_storage_path: Path | None = None # finally 블록에서 사용 위해 정의
-    final_folder_name: str | None = None # 로그 파일명 위해 정의
+    job_storage_path: Path | None = None
+    final_folder_name: str | None = None
+    acquired_semaphore = False # <<< 세마포 획득 여부 플래그
 
-    # <<< 로깅: 작업 시작 시 job_id 포함 >>>
-    logger.info(f"[Job: {job_id}] Starting translation process for file '{original_filename}'.")
-
+    logger.info(f"[Job: {job_id}] Waiting to acquire translation semaphore (available: {translation_semaphore._value})...") # 내부 값 확인 (디버깅용)
     try:
-        # --- 안전한 폴더명 생성 ---
+        # === 세마포 획득 ===
+        translation_semaphore.acquire()
+        acquired_semaphore = True
+        logger.info(f"[Job: {job_id}] Acquired translation semaphore. Starting translation process for file '{original_filename}'.")
+        # === 획득 완료 ===
+
+        # --- 안전한 폴더명 생성 및 상태 초기화 (기존 try 블록 내용) ---
         sanitized_base_name = sanitize_filename_for_directory(original_filename)
         job_id_prefix = job_id.split('-')[0]
         final_folder_name = f"{sanitized_base_name}_{job_id_prefix}"
         job_storage_path = STORAGE_DIR / final_folder_name
-        # --- 생성 끝 ---
 
-        job_status[job_id] = {
-            "status": "Starting",
+        job_status[job_id] = { # 상태 초기화는 세마포 획득 *후* 에 수행
+            "status": "Processing", # 세마포 획득 후 상태 변경
             "total_pages": 0,
             "current_page": 0,
             "start_time": start_time,
@@ -287,18 +298,14 @@ def perform_translation_sync(
 
         # 모델 로드 확인
         if onnx_model is None:
-            error_msg = f"[Job: {job_id}] ONNX model not loaded." # <<< job_id 추가
+            error_msg = f"[Job: {job_id}] ONNX model not loaded."
             logger.error(error_msg + f" Cannot perform translation.")
             job_status[job_id]["status"] = "Error"
             job_status[job_id]["error"] = error_msg
-            job_status[job_id]["end_time"] = time.time()
-            # 모델 로드 실패 시에도 finally 실행되도록 return 위치 조정 필요 없음
-            # 단, input_path 정리 로직은 여기서 처리하면 finally 에서 중복될 수 있으니 finally로 이동
-            # if input_path.exists():
-            #    try: os.remove(input_path)
-            #    except Exception as e: logger.error(f"[Job: {job_id}] Error removing input file on model load fail: {e}")
-            raise RuntimeError(error_msg) # 에러를 발생시켜 finally 블록 실행 유도
+            # 여기서 return하면 finally가 실행 안될 수 있으므로 에러 발생시킴
+            raise RuntimeError(error_msg)
 
+        # --- 실제 번역 로직 (기존 try 블록 내용) ---
         output_path = None
         dual_output_path = None
 
@@ -310,7 +317,7 @@ def perform_translation_sync(
         if dual_output_path.exists(): os.remove(dual_output_path)
 
         logger.info(f"[Job: {job_id}] Starting background translation details. Options: {job_status[job_id]['options']}")
-        job_status[job_id]["status"] = "Parsing"
+        job_status[job_id]["status"] = "Parsing" # 상태를 Parsing으로 변경
 
         # 페이지 파싱
         parsed_pages = parse_page_string(pages_str)
@@ -321,6 +328,7 @@ def perform_translation_sync(
 
         # pdf2zh.high_level.translate 호출
         logger.info(f"[Job: {job_id}] Calling pdf2zh.translate...")
+        # <<< 실제 번역 호출 부분 >>>
         translate(
             files=[str(input_path)],
             output=str(TEMP_DIR),
@@ -366,30 +374,35 @@ def perform_translation_sync(
             job_status[job_id]["error"] = error_msg
 
     except Exception as e:
-        # 이미 로그된 에러 외 추가 로깅 (예: translate 함수 내부 오류)
-        if job_status.get(job_id) and job_status[job_id].get("status") != "Error": # 아직 에러 상태가 아니면
-             logger.exception(f"[Job: {job_id}] Unexpected error during translation: {e}")
-             job_status[job_id]["status"] = "Error"
-             job_status[job_id]["error"] = str(e)
-        # 모델 로드 실패 시 여기서 잡힘
-        elif not job_status.get(job_id): # 상태가 아예 생성 안된 경우 (모델 로드 실패)
-             logger.exception(f"[Job: {job_id}] Critical error before status initialization (likely model load fail): {e}")
-             # 상태를 임시로 만들어 에러 기록 (선택적)
-             job_status[job_id] = {"status": "Error", "error": str(e), "start_time": start_time} 
+        # 세마포 획득 *후* 발생한 예외 처리
+        if job_status.get(job_id): # 상태가 설정되었다면
+             if job_status[job_id].get("status") != "Error": # 아직 에러 상태가 아니면
+                  logger.exception(f"[Job: {job_id}] Error during translation process: {e}")
+                  job_status[job_id]["status"] = "Error"
+                  job_status[job_id]["error"] = str(e)
+        else: # 매우 드문 경우: 세마포는 획득했으나 상태 설정 전 오류?
+             logger.exception(f"[Job: {job_id}] Critical error after acquiring semaphore but before status init: {e}")
+             # 임시 상태라도 만들어 에러 기록
+             job_status[job_id] = {"status": "Error", "error": str(e), "start_time": start_time}
+
     finally:
-        # finally 블록은 try에서 에러 발생 여부와 관계없이 항상 실행됨
+        # === 세마포 해제 ===
+        if acquired_semaphore:
+            translation_semaphore.release()
+            logger.info(f"[Job: {job_id}] Released translation semaphore.")
+        # === 해제 완료 ===
+
+        # --- 기존 finally 내용 (상태 업데이트, 임시 파일 정리, 로그 추출) ---
         current_status = job_status.get(job_id, {}).get("status", "Unknown")
-        if current_status != "Unknown": # 상태가 설정되었다면 (즉, try 블록 진입 후)
+        if current_status != "Unknown":
              end_time = time.time()
-             job_status[job_id]["end_time"] = end_time
+             if job_status.get(job_id):
+                 job_status[job_id]["end_time"] = end_time
              logger.info(f"[Job: {job_id}] Process finished with status '{current_status}' in {end_time - start_time:.2f} seconds.")
 
-        # --- 임시 파일 정리 --- 
-        # 성공 시에는 파일이 이동되었으므로 input_path만 정리하면 안됨
-        # 오류 발생 시 또는 정상 종료 시에도 임시 파일이 남아있을 수 있음 (예: dual 파일)
-        # 따라서 finally에서 항상 남아있는 임시 파일 삭제 시도 (이미 이동된 파일은 에러 무시)
+        # 임시 파일 정리
         logger.info(f"[Job: {job_id}] Cleaning up temporary files...")
-        # input 파일 (오류 시 또는 성공 시 이동 후 여기서는 삭제 시도 X)
+        # input 파일 (오류 시 또는 성공 시 이동 후 여기서는 삭제 시도 X -> 성공시 이동되므로 오류시에만 삭제)
         if input_path.exists() and job_status.get(job_id, {}).get("status") == "Error":
             try: os.remove(input_path)
             except Exception as e: logger.error(f"[Job: {job_id}] Error removing temp input file {input_path}: {e}")
@@ -402,14 +415,14 @@ def perform_translation_sync(
             try: os.remove(dual_output_path)
             except Exception as e: logger.error(f"[Job: {job_id}] Error removing temp dual file {dual_output_path}: {e}")
 
-        # --- 로그 추출 및 저장 --- 
-        if job_storage_path and final_folder_name: # 최종 폴더 경로가 생성되었는지 확인
+        # 로그 추출 및 저장
+        if job_storage_path and final_folder_name:
              output_log_filename = f"{final_folder_name}_log.txt"
              output_log_path = job_storage_path / output_log_filename
              extract_job_log(job_id, log_file_path, output_log_path)
         else:
-             logger.warning(f"[Job: {job_id}] Final storage path not defined (job might have failed early), skipping log extraction.")
-        # --- 로그 저장 끝 --- 
+             logger.warning(f"[Job: {job_id}] Final storage path not defined, skipping log extraction.")
+        # --- 기존 finally 끝 ---
 # --- perform_translation_sync 함수 끝 ---
 
 # --- translate_pdf 엔드포인트 ---
