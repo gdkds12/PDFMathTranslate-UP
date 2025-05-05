@@ -439,7 +439,7 @@ def perform_translation_sync(
              output_log_path = job_storage_path / output_log_filename
              extract_job_log(job_id, log_file_path, output_log_path)
         else:
-             logger.warning(f"[Job: {job_id}] Final storage path not defined, skipping log extraction.")
+             logger.warning(f"[Job: {job_id}] Final folder name not defined (job might have failed very early), skipping log extraction.")
         # --- 로그 저장 끝 ---
 # --- perform_translation_sync 함수 끝 ---
 
