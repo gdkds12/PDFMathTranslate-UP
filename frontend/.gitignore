@@ -1,0 +1,13 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+
+# Optional: dotenv environment variables file
+.env*.local
+.env
+
+# Optional: OS generated files
+.DS_Store
+Thumbs.db 
