@@ -107,14 +107,15 @@ app = FastAPI()
 # --- CORS 미들웨어 추가 시작 ---
 # TODO: 프로덕션 환경에서는 origins를 특정 도메인으로 제한해야 합니다.
 origins = [
-    "http://localhost:3000", # Next.js 기본 개발 포트
+    "http://localhost:3000",  # 로컬 개발 환경용
+    "https://pdftranslator.site", # 실제 서비스 도메인 추가!
     "http://localhost",      # 경우에 따라 필요할 수 있음
     "http://127.0.0.1:3000",
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # 허용할 오리진 목록
+    allow_origins=origins, # 수정된 origins 리스트 사용
     allow_credentials=True,
     allow_methods=["*"],    # 모든 HTTP 메소드 허용 (GET, POST 등)
     allow_headers=["*"],    # 모든 헤더 허용
