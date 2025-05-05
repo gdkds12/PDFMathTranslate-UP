@@ -73,6 +73,7 @@ class YoloBox:
 class OnnxModel(DocLayoutModel):
     def __init__(self, model_path: str):
         self.model_path = model_path
+        logger = logging.getLogger(__name__)
 
         model = onnx.load(model_path)
         metadata = {d.key: d.value for d in model.metadata_props}
