@@ -26,8 +26,9 @@ RUN python3 -m pip install --upgrade pip
 # 4. Set up work directory
 WORKDIR /app
 
-# 5. Copy pyproject.toml first for dependency caching
+# 5. Copy files needed for installation first
 COPY pyproject.toml ./
+COPY README.md ./
 
 # 6. Install the project and its dependencies using pip
 # This reads pyproject.toml and installs everything in [project.dependencies]
