@@ -28,10 +28,8 @@ services:
     ports:
       - "3000:3000" # Expose port 3000 for the frontend
     environment:
-      # <<< 중요: 프론트엔드가 백엔드를 찾을 수 있도록 URL 설정 >>>
-      # Docker Compose 네트워크 내에서 'backend' 서비스 이름으로 접근
-      # NEXT_PUBLIC_ 접두사는 Next.js가 브라우저 환경변수로 인식하게 함
-      NEXT_PUBLIC_API_URL: http://backend:8000
+      # 브라우저가 접근 가능한 백엔드 주소로 변경
+      NEXT_PUBLIC_API_URL: http://localhost:8000
     depends_on:
       - backend # 백엔드가 시작된 후 프론트엔드 시작 (네트워크 준비 보장)
     restart: unless-stopped # Optional: Add restart policy
