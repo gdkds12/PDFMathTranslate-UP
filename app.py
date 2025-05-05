@@ -433,11 +433,20 @@ def perform_translation_sync(
                 logger.error(f"[Job: {job_id}] Error removing temp dual file {dual_output_path}: {e}")
         # --- 임시 파일 정리 끝 ---
 
-        # --- 로그 추출 및 저장 ---
-        if job_storage_path and final_folder_name:
-             output_log_filename = f"{final_folder_name}_log.txt"
-             output_log_path = job_storage_path / output_log_filename
-             extract_job_log(job_id, log_file_path, output_log_path)
+        # --- 로그 추출 및 저장 (디렉토리 생성 추가) ---
+        if final_folder_name: # 폴더 이름이라도 생성되었다면
+             # job_storage_path가 None일 수 있으므로 다시 계산하거나 확인
+             if job_storage_path is None:
+                  job_storage_path = STORAGE_DIR / final_folder_name
+
+             # 로그 저장 전에 디렉토리 존재 확인 및 생성
+             try:
+                 job_storage_path.mkdir(parents=True, exist_ok=True)
+                 output_log_filename = f"{final_folder_name}_log.txt"
+                 output_log_path = job_storage_path / output_log_filename
+                 extract_job_log(job_id, log_file_path, output_log_path)
+             except Exception as e:
+                  logger.error(f"[Job: {job_id}] Failed to ensure storage directory or save log file: {e}")
         else:
              logger.warning(f"[Job: {job_id}] Final folder name not defined (job might have failed very early), skipping log extraction.")
         # --- 로그 저장 끝 ---
