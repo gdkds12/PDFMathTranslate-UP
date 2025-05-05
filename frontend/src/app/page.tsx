@@ -49,8 +49,11 @@ export default function Home() {
   const [customInstructions, setCustomInstructions] = useState<string>('');
   // --- 제거 끝 ---
 
-  // --- 예상 시간 상태 추가 ---
-  const [estimatedRemainingTime, setEstimatedRemainingTime] = useState<number | null>(null);
+  // --- 예상 시간 상태 추가 (백엔드 값 + 계산 타임스탬프 + 실제 표시 값) ---
+  const [backendEstimatedRemainingTime, setBackendEstimatedRemainingTime] = useState<number | null>(null);
+  const [calculationTimestamp, setCalculationTimestamp] = useState<number | null>(null);
+  const [displayRemainingTime, setDisplayRemainingTime] = useState<number | null>(null);
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null); // 타이머 인터벌 ID
   // --- 상태 추가 끝 ---
 
   // Set the worker source globally when the page mounts on the client
@@ -73,7 +76,10 @@ export default function Home() {
       // setKeepTechnicalTerms(false); // 제거
       // setKeepEnglishNames(false); // 제거
       setCustomInstructions('');
-      setEstimatedRemainingTime(null); // <<< 예상 시간 초기화
+      setBackendEstimatedRemainingTime(null);
+      setCalculationTimestamp(null);
+      setDisplayRemainingTime(null);
+      stopTimer(); // 기존 타이머 중지
       // --- 초기화 끝 ---
 
       if (pollingIntervalRef.current) {
@@ -108,24 +114,40 @@ export default function Home() {
       }
 
       const data = await response.json();
-      setStatus(data.status || 'Unknown');
+      const newStatus = data.status || 'Unknown';
+      setStatus(newStatus);
       setCurrentPage(data.current_page || 0);
       setTotalPages(data.total_pages || 0);
       setErrorDetail(data.error || null);
 
-      // --- 예상 시간 상태 업데이트 ---
-      setEstimatedRemainingTime(data.estimated_remaining_time_seconds ?? null); // nullish coalescing 사용
+      // --- 예상 시간 상태 업데이트 (백엔드 값 + 타임스탬프) ---
+      const newBackendTime = data.estimated_remaining_time_seconds ?? null;
+      const newCalcTimestamp = data.calculation_timestamp ?? null;
+
+      setBackendEstimatedRemainingTime(newBackendTime);
+      setCalculationTimestamp(newCalcTimestamp);
       // --- 업데이트 끝 ---
 
-      if (data.status === 'Done') {
+      if (newStatus === 'Done') {
         console.log("Translation done, stopping polling.");
         setTranslatedFileUrl(`http://localhost:8000/api/translate/download/${currentJobId}`);
         stopPolling();
+        stopTimer(); // 타이머 중지
+        setDisplayRemainingTime(0);
         setIsProcessing(false);
-      } else if (data.status === 'Error') {
+      } else if (newStatus === 'Error') {
         console.error("Translation error reported by backend:", data.error);
         stopPolling();
+        stopTimer(); // 타이머 중지
+        setDisplayRemainingTime(null);
         setIsProcessing(false);
+      } else if (newStatus === 'Translating') {
+        // 번역 중일 때 타이머 시작/재시작
+        startTimer(newBackendTime, newCalcTimestamp);
+      } else {
+        // Translating 외의 다른 상태 (Starting, Parsing 등)에서는 타이머 중지
+        stopTimer();
+        setDisplayRemainingTime(null); // 명시적으로 null 설정
       }
 
     } catch (error) {
@@ -133,8 +155,9 @@ export default function Home() {
       setStatus('Error');
       setErrorDetail('상태 폴링 중 연결 오류 발생.');
       stopPolling();
+      stopTimer(); // 에러 시 타이머 중지
+      setDisplayRemainingTime(null); // 에러 시 예상 시간 초기화
       setIsProcessing(false);
-      setEstimatedRemainingTime(null); // 에러 시 예상 시간 초기화
     }
   };
   // --- 폴링 함수 끝 ---
@@ -157,10 +180,50 @@ export default function Home() {
   };
   // --- 폴링 시작/중지 끝 ---
 
-  // 컴포넌트 언마운트 시 폴링 중지
+  // --- 1초 타이머 로직 추가 ---
+  const startTimer = (initialTime: number | null, timestamp: number | null) => {
+    stopTimer(); // 기존 타이머 중지
+
+    if (initialTime === null || timestamp === null) {
+      setDisplayRemainingTime(null); // 초기 값 없으면 표시 안 함
+      return;
+    }
+
+    // 타이머 시작 시 즉시 현재 시간 계산 및 표시
+    const updateDisplayTime = () => {
+      if (status !== 'Translating' || backendEstimatedRemainingTime === null || calculationTimestamp === null) {
+        stopTimer();
+        return;
+      }
+      const now = Date.now() / 1000; // 현재 시간 (초 단위)
+      const elapsedSinceCalc = now - calculationTimestamp;
+      const currentRemaining = Math.max(0, backendEstimatedRemainingTime - elapsedSinceCalc);
+      setDisplayRemainingTime(currentRemaining);
+
+      if (currentRemaining <= 0) {
+        // 예상 시간이 0이 되면 타이머 멈춤 (폴링으로 Done 상태 전환될 때까지 유지)
+        stopTimer();
+      }
+    };
+
+    updateDisplayTime(); // 즉시 한번 업데이트
+
+    timerIntervalRef.current = setInterval(updateDisplayTime, 1000); // 1초마다 업데이트
+  };
+
+  const stopTimer = () => {
+    if (timerIntervalRef.current) {
+      clearInterval(timerIntervalRef.current);
+      timerIntervalRef.current = null;
+    }
+  };
+  // --- 타이머 로직 끝 ---
+
+  // 컴포넌트 언마운트 시 폴링 및 타이머 중지
   useEffect(() => {
     return () => {
       stopPolling();
+      stopTimer();
     };
   }, []);
 
@@ -178,6 +241,8 @@ export default function Home() {
     setCurrentPage(0);
     setTotalPages(0);
     setIsProcessing(true);
+    setDisplayRemainingTime(null); // 번역 시작 시 초기화
+    stopTimer(); // 이전 타이머 중지
 
     const formData = new FormData();
     formData.append('pdf', selectedFile);
@@ -225,179 +290,165 @@ export default function Home() {
       setTranslatedFileUrl(null);
       setIsProcessing(false);
       stopPolling();
-      setEstimatedRemainingTime(null); // 에러 시 예상 시간 초기화
+      stopTimer();
+      setDisplayRemainingTime(null); // 에러 시 예상 시간 초기화
     }
     // handleTranslate는 이제 즉시 반환하고, 실제 상태 업데이트는 폴링에서 처리
   };
 
   // Helper to render status icon and text
   const renderStatus = () => {
+    let icon = <QuestionMarkCircleIcon className="h-6 w-6 text-gray-400" />;
+    let message = '상태 확인 중...';
+    let progress = 0;
+    if (totalPages > 0) {
+      progress = Math.min(100, (currentPage / totalPages) * 100);
+    }
+    // 예상 시간 표시 로직 수정 (displayRemainingTime 사용)
+    const timeString = formatTime(displayRemainingTime);
+
     switch (status) {
+      case 'Ready':
+        icon = <InformationCircleIcon className="h-6 w-6 text-blue-500" />;
+        message = '번역할 PDF 파일을 선택하세요.';
+        break;
+      case 'File selected':
+        icon = <CheckCircleIcon className="h-6 w-6 text-green-500" />;
+        message = '파일이 선택되었습니다. 번역 버튼을 누르세요.';
+        break;
       case 'Uploading':
+        icon = <ArrowUpTrayIcon className="h-6 w-6 text-blue-500 animate-pulse" />;
+        message = 'PDF 파일 업로드 중...';
+        break;
       case 'Starting':
       case 'Parsing':
-        return <span className="flex items-center text-sm text-blue-600"><InformationCircleIcon className="w-4 h-4 mr-1 animate-spin" /> {status}...</span>;
+        icon = <ClockIcon className="h-6 w-6 text-yellow-500 animate-spin" />;
+        message = '번역 작업 준비 중...';
+        break;
       case 'Translating':
-        // 진행률 표시 추가
-        const progress = totalPages > 0 ? Math.round((currentPage / totalPages) * 100) : 0;
-        // --- 예상 시간 표시 추가 ---
-        const timeEstimateString = estimatedRemainingTime !== null && estimatedRemainingTime >= 0
-                                     ? formatTime(estimatedRemainingTime)
-                                     : '';
-        // --- 추가 끝 ---
-        return (
-          <div className="w-full">
-            <div className="flex justify-between items-center mb-1"> {/* Flexbox 사용 */}
-              <span className="flex items-center text-sm text-blue-600">
-                <ClockIcon className="w-4 h-4 mr-1 animate-spin" />
-                Translating page {currentPage} of {totalPages}...
-              </span>
-              {/* 예상 시간 표시 (오른쪽 정렬) */}
-              {timeEstimateString && (
-                <span className="text-xs text-gray-500">{timeEstimateString}</span>
-              )}
-            </div>
-            {/* Progress Bar */}
-            <div className="w-full bg-gray-200 rounded-full h-1.5">
-              <div className="bg-blue-600 h-1.5 rounded-full transition-all duration-300 ease-in-out" style={{ width: `${progress}%` }}></div>
-            </div>
-          </div>
-        );
-      case 'File selected':
-      case 'Ready':
-        return <span className="flex items-center text-sm text-gray-500"><InformationCircleIcon className="w-4 h-4 mr-1" /> {status}</span>;
+        icon = <ClockIcon className="h-6 w-6 text-yellow-500 animate-spin" />;
+        message = `번역 중 (${currentPage}/${totalPages} 페이지)... ${timeString}`;
+        break;
       case 'Done':
-        return <span className="flex items-center text-sm text-green-600"><CheckCircleIcon className="w-4 h-4 mr-1" /> Translation successful!</span>;
+        icon = <CheckCircleIcon className="h-6 w-6 text-green-500" />;
+        message = '번역 완료!';
+        break;
       case 'Error':
-        return <span className="flex items-center text-sm text-red-600"><XCircleIcon className="w-4 h-4 mr-1" /> Error</span>;
+        icon = <XCircleIcon className="h-6 w-6 text-red-500" />;
+        message = `오류 발생: ${errorDetail || '알 수 없는 오류'}`;
+        break;
       default:
-        return <span className="text-sm text-gray-500">{status}</span>;
+        message = `알 수 없는 상태: ${status}`;
     }
+
+    return (
+      <div className="mt-4 p-4 bg-gray-50 rounded-lg shadow-inner">
+        <div className="flex items-center space-x-3">
+          {icon}
+          <p className="text-sm font-medium text-gray-700">{message}</p>
+        </div>
+        {(status === 'Translating' || status === 'Parsing' || status === 'Starting') && totalPages > 0 && (
+          <div className="mt-2 w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700">
+            <div
+              className="bg-blue-600 h-2.5 rounded-full transition-width duration-500 ease-in-out"
+              style={{ width: `${progress}%` }}
+            ></div>
+          </div>
+        )}
+      </div>
+    );
   };
 
   // Callback function for PdfPreview component to report errors
   const handlePreviewError = (message: string) => {
-      setErrorDetail(message);
-      // Optionally set status to 'Error' as well if preview failing is critical
-      // setStatus('Error');
+    console.warn("PDF Preview Warning/Error:", message); // Log as warning instead of error
+    // Don't set status to Error here, just log it.
+    // setErrorDetail(`PDF 미리보기 오류: ${message}`);
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-gray-100 to-gray-200 p-4">
-      <div className="w-full max-w-lg bg-white rounded-xl shadow-lg overflow-hidden">
-        {/* Header */}
-        <div className="bg-blue-600 p-6 text-white">
-          <h1 className="text-2xl font-bold text-center">PDF 번역 서비스</h1>
-          <p className="text-sm text-blue-100 text-center mt-1">영문 PDF를 한국어로 번역합니다.</p>
-        </div>
+    <main className="container mx-auto p-4 md:p-8 max-w-4xl">
+      <h1 className="text-3xl font-bold mb-6 text-center text-gray-800">PDF 한국어 번역기</h1>
 
-        {/* Content Area */}
-        <div className="p-6 md:p-8 space-y-6">
-          {/* File Upload */}
-          <div>
-            <label className="block text-sm font-semibold text-gray-700 mb-2">1. PDF 파일 업로드</label>
-            <label htmlFor="pdf-upload" className={`group flex justify-center w-full h-32 px-4 transition bg-white border-2 ${isProcessing ? 'border-gray-200' : 'border-gray-300 hover:border-blue-400'} border-dashed rounded-md appearance-none ${isProcessing ? 'cursor-not-allowed' : 'cursor-pointer'} focus:outline-none`}>
-              <span className="flex flex-col items-center justify-center space-x-2 pt-4">
+      <div className="bg-white p-6 rounded-lg shadow-md mb-6">
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-gray-700 mb-1">1. PDF 파일 선택</label>
+          <label htmlFor="file-upload" className={`group flex flex-col items-center justify-center w-full h-32 px-4 transition bg-white border-2 ${isProcessing ? 'border-gray-200' : 'border-gray-300 hover:border-blue-400'} border-dashed rounded-md appearance-none ${isProcessing ? 'cursor-not-allowed' : 'cursor-pointer'} focus:outline-none`}>
+             <span className="flex flex-col items-center justify-center space-y-2">
                 <ArrowUpTrayIcon className={`w-10 h-10 ${selectedFile ? 'text-blue-600' : 'text-gray-400'} ${!isProcessing && 'group-hover:text-blue-500'}`} />
-                <span className={`font-medium text-sm ${selectedFile ? 'text-blue-700' : 'text-gray-600'} ${!isProcessing && 'group-hover:text-blue-600'} truncate max-w-xs`}>
+                <span className={`font-medium text-sm ${selectedFile ? 'text-blue-700' : 'text-gray-600'} ${!isProcessing && 'group-hover:text-blue-600'} truncate max-w-xs text-center`}>
                   {selectedFile ? selectedFile.name : '여기를 클릭하거나 파일을 드래그하세요'}
                 </span>
                 {!selectedFile && <span className="text-xs text-gray-500">PDF 파일만 가능</span>}
-              </span>
-              <input id="pdf-upload" type="file" accept=".pdf" onChange={handleFileChange} className="sr-only" disabled={isProcessing} />
-            </label>
-          </div>
+             </span>
+             <input id="file-upload" type="file" accept=".pdf" onChange={handleFileChange} className="sr-only" disabled={isProcessing} />
+          </label>
+          <p className="text-xs text-gray-500 mt-1">※ 디지털 형식의 PDF만 지원됩니다. 스캔/이미지 PDF는 OCR 기능이 없어 번역할 수 없습니다.</p>
+        </div>
 
-          {/* 2. Page Range Input */}
-          <div>
-            <label htmlFor="page-range" className="block text-sm font-semibold text-gray-700 mb-2">2. 페이지 범위 (선택)</label>
-            <input
-              id="page-range"
-              type="text"
-              placeholder="예: 1-5, 8, 11-13 (전체: 비워두기)"
-              value={pageRange}
-              onChange={handlePageRangeChange}
-              className={`w-full px-4 py-2 text-gray-700 ${isProcessing ? 'bg-gray-100 cursor-not-allowed' : 'bg-gray-50'} border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition`}
-              disabled={isProcessing}
-            />
-            <p className="text-xs text-gray-500 mt-1">쉼표(,)로 구분, 하이픈(-)으로 범위 지정</p>
-          </div>
+        <div className="mb-4">
+          <label htmlFor="page-range" className="block text-sm font-medium text-gray-700 mb-1">2. 번역할 페이지 범위 (선택 사항)</label>
+          <input
+            id="page-range"
+            type="text"
+            value={pageRange}
+            onChange={handlePageRangeChange}
+            placeholder="예: 1-5, 8, 10-12 (비워두면 전체 페이지)"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            disabled={isProcessing}
+          />
+        </div>
 
-          {/* --- 3. 세부 지침 추가 (번호 수정) --- */}
-          <div>
-            <label htmlFor="customInstructions" className="block text-sm font-semibold text-gray-700 mb-2">3. 세부 지침 (선택)</label> {/* 번호 3으로 수정 */}
-            <textarea
-              id="customInstructions"
-              name="customInstructions"
-              rows={3}
-              placeholder="번역 스타일, 특정 단어 처리 방식 등 추가적인 지시사항을 입력하세요. (예: '모든 인용구는 원문 그대로 유지해주세요', 'Chapter는 장으로 번역해주세요')"
-              value={customInstructions}
-              onChange={(e) => setCustomInstructions(e.target.value)}
-              disabled={isProcessing}
-              className={`block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6 transition ${isProcessing ? 'bg-gray-100 cursor-not-allowed opacity-50' : 'bg-white'}`}
-            />
-          </div>
-          {/* --- 세부 지침 끝 --- */}
+        <div className="mb-6">
+          <label htmlFor="custom-instructions" className="block text-sm font-medium text-gray-700 mb-1">3. 추가 번역 지침 (선택 사항)</label>
+          <textarea
+            id="custom-instructions"
+            rows={3}
+            value={customInstructions}
+            onChange={(e) => setCustomInstructions(e.target.value)}
+            placeholder="예: 특정 용어는 특정 단어로 번역해주세요."
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            disabled={isProcessing}
+          />
+        </div>
 
-          {/* Translate Button */}
-          <div className="pt-2">
-            <button
-              onClick={handleTranslate}
-              disabled={!selectedFile || isProcessing}
-              className="w-full flex justify-center items-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition duration-150 ease-in-out"
-            >
-              {isProcessing ? (
-                <>
-                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  처리 중...
-                </>
-              ) : (
-                '번역 시작'
-              )}
-            </button>
-          </div>
+        <button
+          onClick={handleTranslate}
+          disabled={!selectedFile || isProcessing}
+          className={`w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white transition duration-150 ease-in-out ${!selectedFile || isProcessing ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500'}`}
+        >
+          {isProcessing ? '처리 중...' : '번역 시작'}
+        </button>
+      </div>
 
-          {/* Status and Result */}
-          <div className="pt-4 border-t border-gray-200 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-gray-700">상태:</span>
-              {renderStatus()}
-            </div>
+      {status !== 'Ready' && renderStatus()}
 
-            {/* 에러 메시지 표시 개선 */}
-            {status === 'Error' && errorDetail && (
-              <p className="text-sm text-red-600 bg-red-50 p-3 rounded-md border border-red-200">{errorDetail}</p>
-            )}
+      {translatedFileUrl && status === 'Done' && (
+        <div className="mt-6 text-center">
+          <a
+            href={translatedFileUrl}
+            download
+            className="inline-flex items-center px-6 py-3 border border-transparent text-base font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition duration-150 ease-in-out space-x-2"
+          >
+            <DocumentArrowDownIcon className="h-5 w-5" />
+            <span>번역된 PDF 다운로드</span>
+          </a>
+        </div>
+      )}
 
-            {/* 다운로드 버튼 표시 */}
-            {status === 'Done' && translatedFileUrl && (
-              <div className="text-center">
-                <a
-                  href={translatedFileUrl}
-                  download
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition"
-                >
-                  <DocumentArrowDownIcon className="-ml-1 mr-2 h-5 w-5" />
-                  번역된 PDF 다운로드
-                </a>
-              </div>
-            )}
-
-            {/* Dynamically loaded PDF Preview */}
-            {status === 'Done' && translatedFileUrl && (
-                <PdfPreview fileUrl={translatedFileUrl} onError={handlePreviewError} />
-            )}
-
-            {/* 에러 메시지 표시 (Unified) */}
-            {status !== 'Error' && errorDetail && status === 'Done' && (
-                <p className="text-sm text-orange-600 bg-orange-50 p-3 rounded-md border border-orange-200">미리보기 오류: {errorDetail}</p>
-            )}
+      {selectedFile && (
+        <div className="mt-8">
+          <h2 className="text-xl font-semibold mb-4 text-gray-700">
+            {status === 'Done' && translatedFileUrl ? 'PDF 미리보기 (번역본)' : 'PDF 미리보기 (원본)'}
+          </h2>
+          <div className="border rounded-lg overflow-hidden shadow-lg" style={{ height: '600px', overflowY: 'auto' }}>
+            <PdfPreview
+                file={status === 'Done' && translatedFileUrl ? translatedFileUrl : selectedFile}
+                onError={handlePreviewError}
+             />
           </div>
         </div>
-      </div>
+      )}
     </main>
   );
 } 

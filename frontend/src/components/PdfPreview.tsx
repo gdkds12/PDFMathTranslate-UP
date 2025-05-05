@@ -15,11 +15,11 @@ import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/solid'; /
 
 // Export the props interface
 export interface PdfPreviewProps {
-  fileUrl: string;
+  file: File | string; // <<< File 객체 또는 URL 문자열 허용
   onError: (message: string) => void; // Function to report errors back to parent
 }
 
-export default function PdfPreview({ fileUrl, onError }: PdfPreviewProps) {
+export default function PdfPreview({ file, onError }: PdfPreviewProps) { // <<< file 프롭 사용
   const [numPages, setNumPages] = useState<number | null>(null);
   const [pageNumber, setPageNumber] = useState<number>(1);
   const [containerWidth, setContainerWidth] = useState<number | undefined>(undefined);
@@ -71,10 +71,11 @@ export default function PdfPreview({ fileUrl, onError }: PdfPreviewProps) {
 
   return (
     <div className="mt-6 border-t pt-6">
-      <h3 className="text-lg font-semibold text-gray-800 mb-4 text-center">번역 결과 미리보기</h3>
+      {/* --- 제목 제거 --- */}
+      {/* <h3 className="text-lg font-semibold text-gray-800 mb-4 text-center">번역 결과 미리보기</h3> */}
       <div className="pdf-container max-w-full overflow-x-auto bg-gray-100 p-2 sm:p-4 rounded-md shadow-inner flex flex-col items-center border border-gray-200 min-h-[600px]">
         <Document
-          file={fileUrl}
+          file={file}
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={handleLoadError}
           loading={<div className="flex justify-center items-center min-h-[600px]"><p className="text-sm text-gray-500">미리보기 로딩 중...</p></div>}

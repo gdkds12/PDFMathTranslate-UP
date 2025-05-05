@@ -179,28 +179,39 @@ class BaseTranslator:
                     })}
                 ]
             except Exception:
-                logging.exception("Error parsing prompt template, using default prompt.")
+                logging.exception("프롬프트 템플릿 파싱 오류. 기본 프롬프트를 사용합니다.") # 오류 메시지 한글화
 
-        system_prompt = "You are a professional, authentic machine translation engine. Only Output the translated text, do not include any other text."
-        user_instruction = f"Translate the following markdown source text from {self.lang_in} to {self.lang_out}."
+        # --- 프롬프트 한국어화 시작 ---
+        system_prompt = "당신은 전문적인 번역 엔진입니다. 번역된 텍스트만 출력하고, 다른 내용은 포함하지 마세요."
+        user_instruction = f"다음 마크다운 형식의 원본 텍스트를 {self.lang_in}에서 {self.lang_out}으로 번역하세요."
 
         instructions = []
-        instructions.append("- Strictly preserve proper names (e.g., people, places, organizations, brands) in their original form and language.")
+        # 고유명사 유지 지침 (기본)
+        instructions.append("- 고유명사(예: 인명, 지명, 기관명, 브랜드명 등)는 원문의 형태와 언어를 엄격하게 유지하세요.")
+        # 추가 지침 시작
+        instructions.append("- 영문 이름은 번역없이 유지하세요.")
+        instructions.append("- 각주 설명은 빠짐없이 번역해주세요.")
+        # 추가 지침 끝
 
+        # 사용자 지정 지침 추가
         if prompt_options:
             custom = prompt_options.get("custom_instructions", "").strip()
             if custom:
-                instructions.append(f"- Follow these additional instructions: {custom}")
+                instructions.append(f"- 다음 추가 지침을 따르세요: {custom}")
 
+        # 지침 결합
         if instructions:
-            user_instruction += "\\n\\nTranslation Instructions:\\n" + "\\n".join(instructions)
+            user_instruction += "\n\n번역 지침:\n" + "\n".join(instructions)
 
-        user_instruction += "\\n\\n- Keep the formula notation {v*} unchanged."
-        user_instruction += "\\n- Output translation directly without any additional text."
+        # 수식 및 출력 형식 지침 추가
+        user_instruction += "\n\n- 수식 표기({v*})는 변경하지 않고 그대로 유지하세요."
+        user_instruction += "\n- 번역 결과만 추가 텍스트 없이 바로 출력하세요."
+        # --- 프롬프트 한국어화 끝 ---
 
-        final_prompt = f"{user_instruction}\\n\\nSource Text:\\n'''{text}'''\\n\\nTranslated Text ({self.lang_out}):"
-
-        return [{"role": "user", "content": final_prompt}]
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_instruction + "\n\nSource Text:\n" + text},
+        ]
 
     def __str__(self):
         return f"{self.name} {self.lang_in} {self.lang_out} {self.model}"

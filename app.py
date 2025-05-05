@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- 페이지당 평균 번역 시간 상수 정의 ---
-AVERAGE_SECONDS_PER_PAGE = 20.0 # <<< 20초로 변경
+AVERAGE_SECONDS_PER_PAGE = 15.0 # <<< 15초로 변경
 # --- 상수 정의 끝 ---
 
 # pdf2zh 모듈 임포트
@@ -138,7 +138,7 @@ def translation_progress_callback(job_id: str, progress: Any):
 
             # --- 예상 총 시간 최초 계산 (total 확인 시, 변경된 상수 사용) ---
             if not job_status[job_id].get("estimated_total_time"):
-                job_status[job_id]["estimated_total_time"] = total * AVERAGE_SECONDS_PER_PAGE # <<< 20초 사용
+                job_status[job_id]["estimated_total_time"] = total * AVERAGE_SECONDS_PER_PAGE # <<< 15초 사용
             # --- 계산 끝 ---
             # logger.debug(f"Job {job_id} progress: {current}/{total}") # 너무 자주 로깅될 수 있음
     except Exception as e:
@@ -330,9 +330,11 @@ async def get_translation_status(job_id: str):
     start_time = status_info.get("start_time")
     initial_estimated_total_time = status_info.get("estimated_total_time")
 
+    calculation_timestamp = time.time() # <<< 현재 타임스탬프 기록
+
     if current_status == "Translating" and total_pages > 0 and start_time and initial_estimated_total_time:
         try:
-            current_time = time.time()
+            current_time = calculation_timestamp # <<< 계산 시점 통일
             elapsed_time = current_time - start_time
 
             # 1. 초기 선형 감소 예상 시간
@@ -373,6 +375,7 @@ async def get_translation_status(job_id: str):
         "total_pages": total_pages,   # <<< .get() 제거 가능
         "error": status_info["error"],
         "estimated_remaining_time_seconds": estimated_remaining_time_seconds,
+        "calculation_timestamp": calculation_timestamp # <<< 응답에 추가
     }
 
     # 작업 완료 시 다운로드 URL 제공 (이 엔드포인트에서 직접 파일을 보내지 않음)
