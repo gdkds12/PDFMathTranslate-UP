@@ -26,21 +26,16 @@ RUN python3 -m pip install --upgrade pip
 # 4. Set up work directory
 WORKDIR /app
 
-# 5. Copy files needed for installation first
-COPY pyproject.toml ./
-COPY README.md ./
-
-# 6. Install the project and its dependencies using pip
-# This reads pyproject.toml and installs everything in [project.dependencies]
-# It also installs the 'pdf2zh' package itself (if defined correctly in pyproject.toml)
-# Make sure all runtime dependencies are listed under [project].dependencies
-RUN pip install --no-cache-dir .
-
-# 7. Copy the rest of the application code
+# 5. Copy ALL project files first
+# This includes pyproject.toml, README.md, the pdf2zh directory, etc.
 COPY . /app
 
-# 8. Expose the port the app runs on
+# 6. Install the project and its dependencies using pip
+# Now pip/hatchling can find the 'pdf2zh' directory and other necessary files
+RUN pip install --no-cache-dir .
+
+# 7. Expose the port the app runs on
 EXPOSE 8000
 
-# 9. Command to run the application
+# 8. Command to run the application
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
