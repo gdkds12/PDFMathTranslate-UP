@@ -1,0 +1,47 @@
+# docker-compose.yml
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount .env file for Azure credentials
+      - ./.env:/app/.env
+      # Mount storage directory for persistent output
+      - ./storage:/app/storage
+      # Optional: Mount temp_files for debugging, remove in production
+      # - ./temp_files:/app/temp_files
+    environment:
+      # Pass necessary environment variables if not solely relying on .env
+      # e.g., AZURE_DEPLOYMENT_1_NAME: ${AZURE_DEPLOYMENT_1_NAME}
+      PYTHONUNBUFFERED: 1 # Already set in Dockerfile, but good practice
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all # Use all available GPUs, or specify a number e.g., 1
+              capabilities: [gpu]
+    # Optional: Add healthcheck
+    # healthcheck:
+    #   test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+
+  # Optional: Add frontend service if you want to containerize it too
+  # frontend:
+  #   build:
+  #     context: ./frontend
+  #     dockerfile: Dockerfile # Assuming a Dockerfile exists in ./frontend
+  #   ports:
+  #     - "3000:3000"
+  #   depends_on:
+  #     - backend
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  storage_data: # Define named volume if not using bind mount 

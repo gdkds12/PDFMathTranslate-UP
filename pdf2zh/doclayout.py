@@ -1,5 +1,6 @@
 import abc
 import os.path
+import logging
 
 import cv2
 import numpy as np
@@ -78,7 +79,34 @@ class OnnxModel(DocLayoutModel):
         self._stride = ast.literal_eval(metadata["stride"])
         self._names = ast.literal_eval(metadata["names"])
 
-        self.model = onnxruntime.InferenceSession(model.SerializeToString())
+        # --- GPU Provider 설정 추가 ---
+        available_providers = onnxruntime.get_available_providers()
+        logger.info(f"Available ONNX Runtime Providers: {available_providers}")
+
+        providers = []
+        if 'CUDAExecutionProvider' in available_providers:
+            logger.info("CUDAExecutionProvider found, enabling GPU acceleration.")
+            providers.append('CUDAExecutionProvider')
+        else:
+            logger.warning("CUDAExecutionProvider not found. Using CPU.")
+
+        providers.append('CPUExecutionProvider') # CPU는 항상 fallback으로 추가
+
+        try:
+            self.model = onnxruntime.InferenceSession(
+                model.SerializeToString(),
+                providers=providers # <<< providers 리스트 전달
+            )
+            logger.info(f"ONNX Runtime session created with providers: {self.model.get_providers()}")
+        except Exception as e:
+            logger.exception(f"Failed to create ONNX Runtime session with providers {providers}. Falling back to CPU only.")
+            # CPU만 사용하여 재시도
+            self.model = onnxruntime.InferenceSession(
+                model.SerializeToString(),
+                providers=['CPUExecutionProvider']
+            )
+            logger.info(f"ONNX Runtime session created with providers: {self.model.get_providers()}")
+        # --- 설정 추가 끝 ---
 
     @staticmethod
     def from_pretrained():

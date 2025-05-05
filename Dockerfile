@@ -1,28 +1,40 @@
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+# Dockerfile
 
+# 1. Base Image: Choose a CUDA version compatible with your host driver and onnxruntime-gpu
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+
+# 2. Environment Variables
+ENV PYTHONUNBUFFERED=1 \
+    # Poetry configuration
+    POETRY_NO_INTERACTION=1 \
+    POETRY_VIRTUALENVS_CREATE=false \
+    # Set locale
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# 3. Install Python and build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 python3-pip python3-venv curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry
+RUN curl -sSL https://install.python-poetry.org | python3 -
+
+# 4. Set up work directory
 WORKDIR /app
 
+# 5. Copy dependency files and install dependencies
+# Copy only necessary files first to leverage Docker cache
+COPY pyproject.toml poetry.lock ./
+# Install dependencies including onnxruntime-gpu
+# --no-root is important if pdf2zh is listed as develop = true
+RUN poetry install --no-dev --no-root
 
-EXPOSE 7860
+# 6. Copy the rest of the application code
+COPY . /app
 
-ENV PYTHONUNBUFFERED=1
+# 7. Expose the port the app runs on
+EXPOSE 8000
 
-# # Download all required fonts
-# ADD "https://github.com/satbyy/go-noto-universal/releases/download/v7.0/GoNotoKurrent-Regular.ttf" /app/
-# ADD "https://github.com/timelic/source-han-serif/releases/download/main/SourceHanSerifCN-Regular.ttf" /app/
-# ADD "https://github.com/timelic/source-han-serif/releases/download/main/SourceHanSerifTW-Regular.ttf" /app/
-# ADD "https://github.com/timelic/source-han-serif/releases/download/main/SourceHanSerifJP-Regular.ttf" /app/
-# ADD "https://github.com/timelic/source-han-serif/releases/download/main/SourceHanSerifKR-Regular.ttf" /app/
-
-RUN apt-get update && \
-     apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libxext6 libsm6 libxrender1 && \
-     rm -rf /var/lib/apt/lists/*
-
-COPY pyproject.toml .
-RUN uv pip install --system --no-cache -r pyproject.toml && babeldoc --version && babeldoc --warmup
-
-COPY . .
-
-RUN uv pip install --system --no-cache . && uv pip install --system --no-cache -U babeldoc "pymupdf<1.25.3" && babeldoc --version && babeldoc --warmup
-
-CMD ["pdf2zh", "-i"]
+# 8. Command to run the application
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
