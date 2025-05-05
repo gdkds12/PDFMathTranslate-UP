@@ -1,17 +1,11 @@
 "use client"; // This component uses client-side features
 
 import React, { useState, useEffect } from 'react';
-// Remove pdfjs import from here
-import { Document, Page } from 'react-pdf';
+import { Document, Page, pdfjs } from 'react-pdf';
 // import { Document, Page, pdfjs } from 'react-pdf'; // Re-import pdfjs here
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/solid'; // Icons for navigation
-
-// Remove the global workerSrc setting from this file
-// if (typeof window !== 'undefined') {
-//     pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
-// }
 
 // Export the props interface
 export interface PdfPreviewProps {
@@ -40,6 +34,11 @@ export default function PdfPreview({ file, onError }: PdfPreviewProps) { // <<< 
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // --- 워커 옵션 정의 --- 
+  const options = {
+    workerSrc: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`
+  };
+  // --- 워커 옵션 끝 --- 
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number }): void {
     setNumPages(numPages);
@@ -70,12 +69,13 @@ export default function PdfPreview({ file, onError }: PdfPreviewProps) { // <<< 
   const goToNextPage = () => setPageNumber(prev => Math.min(prev + 1, numPages || 1));
 
   return (
-    <div className="mt-6 border-t pt-6">
+    <div className="">
       {/* --- 제목 제거 --- */}
       {/* <h3 className="text-lg font-semibold text-gray-800 mb-4 text-center">번역 결과 미리보기</h3> */}
       <div className="pdf-container max-w-full overflow-x-auto bg-gray-100 p-2 sm:p-4 rounded-md shadow-inner flex flex-col items-center border border-gray-200 min-h-[600px]">
         <Document
           file={file}
+          options={options}
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={handleLoadError}
           loading={<div className="flex justify-center items-center min-h-[600px]"><p className="text-sm text-gray-500">미리보기 로딩 중...</p></div>}

@@ -41,6 +41,7 @@ export default function Home() {
   const [currentPage, setCurrentPage] = useState<number>(0);
   const [totalPages, setTotalPages] = useState<number>(0);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // 폴링 인터벌 ID 저장
+  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null); // 타이머 인터벌 ID
   // --- 상태 폴링 끝 ---
 
   // --- 번역 옵션 상태 변수 제거 ---
@@ -53,14 +54,64 @@ export default function Home() {
   const [backendEstimatedRemainingTime, setBackendEstimatedRemainingTime] = useState<number | null>(null);
   const [calculationTimestamp, setCalculationTimestamp] = useState<number | null>(null);
   const [displayRemainingTime, setDisplayRemainingTime] = useState<number | null>(null);
-  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null); // 타이머 인터벌 ID
   // --- 상태 추가 끝 ---
 
+  // --- 전역 워커 소스 설정 제거 ---
   // Set the worker source globally when the page mounts on the client
   // Use useEffect to ensure it runs only once on the client side
+  // useEffect(() => {
+  //   pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+  // }, []);
+  // --- 제거 끝 ---
+
+  // --- 1초 타이머 로직을 useEffect로 변경 ---
   useEffect(() => {
-    pdfjs.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
-  }, []);
+    let intervalId: NodeJS.Timeout | null = null;
+
+    // 번역 중이고, 필요한 시간 정보가 있을 때만 타이머 설정
+    if (status === 'Translating' && backendEstimatedRemainingTime !== null && calculationTimestamp !== null && backendEstimatedRemainingTime >= 0) {
+      const updateDisplayTime = () => {
+        // calculationTimestamp와 backendEstimatedRemainingTime은 useEffect dependency로 인해 최신 값 보장
+        // status가 변경되었는지 다시 확인 (effect 실행 후 상태 변경 가능성)
+        if (status !== 'Translating') {
+            if (intervalId) clearInterval(intervalId);
+            intervalId = null;
+            return;
+        }
+        const now = Date.now() / 1000;
+        const elapsedSinceCalc = now - calculationTimestamp;
+        const currentRemaining = Math.max(0, backendEstimatedRemainingTime - elapsedSinceCalc);
+        setDisplayRemainingTime(currentRemaining);
+
+        // 예상 시간이 0 이하가 되면 타이머 중지 (폴링이 Done 상태로 변경할 것임)
+        if (currentRemaining <= 0) {
+          if (intervalId) clearInterval(intervalId);
+          intervalId = null;
+        }
+      };
+
+      // 즉시 한번 실행하여 초기 값 설정
+      updateDisplayTime();
+      // 1초 간격 타이머 설정
+      intervalId = setInterval(updateDisplayTime, 1000);
+    } else {
+      // 번역 중이 아니거나 시간 정보가 없으면 displayRemainingTime 초기화
+      if (status === 'Done') {
+         setDisplayRemainingTime(0); // Done 상태에서는 0으로 명시적 설정
+      } else if (status !== 'Translating') {
+         setDisplayRemainingTime(null); // Translating, Done 외 상태는 null
+      }
+      // Translating 상태인데 시간 정보가 없는 경우(백엔드 오류 등)는 null로 유지됨
+    }
+
+    // Cleanup 함수: 컴포넌트 언마운트 또는 dependency 변경 시 타이머 해제
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [status, backendEstimatedRemainingTime, calculationTimestamp]); // status, 시간 정보가 변경될 때마다 effect 재실행
+  // --- useEffect 로직 끝 ---
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -71,15 +122,13 @@ export default function Home() {
       setJobId(null); // 이전 작업 정보 초기화
       setCurrentPage(0);
       setTotalPages(0);
-
-      // --- 옵션 상태 초기화 (customInstructions만) ---
-      // setKeepTechnicalTerms(false); // 제거
-      // setKeepEnglishNames(false); // 제거
       setCustomInstructions('');
+
+      // --- 예상 시간 관련 상태 초기화 ---
       setBackendEstimatedRemainingTime(null);
       setCalculationTimestamp(null);
-      setDisplayRemainingTime(null);
-      stopTimer(); // 기존 타이머 중지
+      // setDisplayRemainingTime(null); // useEffect가 처리
+      // stopTimer(); // 제거됨
       // --- 초기화 끝 ---
 
       if (pollingIntervalRef.current) {
@@ -93,12 +142,11 @@ export default function Home() {
     setPageRange(event.target.value);
   };
 
-  // --- 폴링 함수 ---
+  // --- 폴링 함수 수정 ---
   const pollStatus = async (currentJobId: string) => {
     try {
       const response = await fetch(`http://localhost:8000/api/translate/status/${currentJobId}`);
       if (!response.ok) {
-        // 404 (Job Not Found) 등 처리
         if (response.status === 404) {
           console.error(`Job ${currentJobId} not found.`);
           setStatus('Error');
@@ -109,21 +157,26 @@ export default function Home() {
           setErrorDetail(`Failed to get translation status (HTTP ${response.status}).`);
         }
         stopPolling();
+        // 상태 업데이트
+        setBackendEstimatedRemainingTime(null);
+        setCalculationTimestamp(null);
         setIsProcessing(false);
         return;
       }
 
       const data = await response.json();
       const newStatus = data.status || 'Unknown';
+      // --- 예상 시간 상태 업데이트 (이 부분은 동일) ---
+      const newBackendTime = data.estimated_remaining_time_seconds ?? null;
+      const newCalcTimestamp = data.calculation_timestamp ?? null;
+
+      // setStatus, setCurrentPage 등은 여기에 유지
       setStatus(newStatus);
       setCurrentPage(data.current_page || 0);
       setTotalPages(data.total_pages || 0);
       setErrorDetail(data.error || null);
 
-      // --- 예상 시간 상태 업데이트 (백엔드 값 + 타임스탬프) ---
-      const newBackendTime = data.estimated_remaining_time_seconds ?? null;
-      const newCalcTimestamp = data.calculation_timestamp ?? null;
-
+      // 상태 업데이트를 일괄적으로 처리 (React 18+에서는 자동 배치될 수 있음)
       setBackendEstimatedRemainingTime(newBackendTime);
       setCalculationTimestamp(newCalcTimestamp);
       // --- 업데이트 끝 ---
@@ -132,31 +185,25 @@ export default function Home() {
         console.log("Translation done, stopping polling.");
         setTranslatedFileUrl(`http://localhost:8000/api/translate/download/${currentJobId}`);
         stopPolling();
-        stopTimer(); // 타이머 중지
-        setDisplayRemainingTime(0);
+        // setDisplayRemainingTime(0); // useEffect가 처리
         setIsProcessing(false);
       } else if (newStatus === 'Error') {
         console.error("Translation error reported by backend:", data.error);
         stopPolling();
-        stopTimer(); // 타이머 중지
-        setDisplayRemainingTime(null);
+        // setDisplayRemainingTime(null); // useEffect가 처리
         setIsProcessing(false);
-      } else if (newStatus === 'Translating') {
-        // 번역 중일 때 타이머 시작/재시작
-        startTimer(newBackendTime, newCalcTimestamp);
-      } else {
-        // Translating 외의 다른 상태 (Starting, Parsing 등)에서는 타이머 중지
-        stopTimer();
-        setDisplayRemainingTime(null); // 명시적으로 null 설정
       }
+      // 'Translating' 상태나 다른 상태일 때 타이머 시작/중지 로직은 useEffect가 담당
 
     } catch (error) {
       console.error('Error polling translation status:', error);
       setStatus('Error');
       setErrorDetail('상태 폴링 중 연결 오류 발생.');
       stopPolling();
-      stopTimer(); // 에러 시 타이머 중지
-      setDisplayRemainingTime(null); // 에러 시 예상 시간 초기화
+      // 상태 업데이트
+      setBackendEstimatedRemainingTime(null);
+      setCalculationTimestamp(null);
+      // setDisplayRemainingTime(null); // useEffect가 처리
       setIsProcessing(false);
     }
   };
@@ -180,52 +227,12 @@ export default function Home() {
   };
   // --- 폴링 시작/중지 끝 ---
 
-  // --- 1초 타이머 로직 추가 ---
-  const startTimer = (initialTime: number | null, timestamp: number | null) => {
-    stopTimer(); // 기존 타이머 중지
-
-    if (initialTime === null || timestamp === null) {
-      setDisplayRemainingTime(null); // 초기 값 없으면 표시 안 함
-      return;
-    }
-
-    // 타이머 시작 시 즉시 현재 시간 계산 및 표시
-    const updateDisplayTime = () => {
-      if (status !== 'Translating' || backendEstimatedRemainingTime === null || calculationTimestamp === null) {
-        stopTimer();
-        return;
-      }
-      const now = Date.now() / 1000; // 현재 시간 (초 단위)
-      const elapsedSinceCalc = now - calculationTimestamp;
-      const currentRemaining = Math.max(0, backendEstimatedRemainingTime - elapsedSinceCalc);
-      setDisplayRemainingTime(currentRemaining);
-
-      if (currentRemaining <= 0) {
-        // 예상 시간이 0이 되면 타이머 멈춤 (폴링으로 Done 상태 전환될 때까지 유지)
-        stopTimer();
-      }
-    };
-
-    updateDisplayTime(); // 즉시 한번 업데이트
-
-    timerIntervalRef.current = setInterval(updateDisplayTime, 1000); // 1초마다 업데이트
-  };
-
-  const stopTimer = () => {
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current);
-      timerIntervalRef.current = null;
-    }
-  };
-  // --- 타이머 로직 끝 ---
-
-  // 컴포넌트 언마운트 시 폴링 및 타이머 중지
+  // 컴포넌트 언마운트 시 폴링 중지 (useEffect 타이머 클린업은 위에서 처리)
   useEffect(() => {
     return () => {
       stopPolling();
-      stopTimer();
     };
-  }, []);
+  }, []); // 빈 dependency 배열로 마운트/언마운트 시에만 실행
 
   const handleTranslate = async () => {
     if (!selectedFile) {
@@ -241,29 +248,23 @@ export default function Home() {
     setCurrentPage(0);
     setTotalPages(0);
     setIsProcessing(true);
-    setDisplayRemainingTime(null); // 번역 시작 시 초기화
-    stopTimer(); // 이전 타이머 중지
+    // setDisplayRemainingTime(null); // useEffect가 처리
+    // stopTimer(); // 제거됨
 
     const formData = new FormData();
     formData.append('pdf', selectedFile);
     if (pageRange.trim()) {
       formData.append('pages', pageRange.trim());
     }
-    // --- FormData에서 옵션 제거 (customInstructions만 남김) ---
-    // formData.append('keep_technical_terms', String(keepTechnicalTerms)); // 제거
-    // formData.append('keep_english_names', String(keepEnglishNames)); // 제거
     formData.append('custom_instructions', customInstructions);
-    // --- 제거 끝 ---
 
     try {
-      // 백엔드에 작업 시작 요청
       const response = await fetch('http://localhost:8000/api/translate', {
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        // 시작 요청 자체 실패 처리
         let detail = `Failed to start translation (HTTP ${response.status})`;
         try {
           const errorData = await response.json();
@@ -274,10 +275,9 @@ export default function Home() {
         throw new Error(detail);
       }
 
-      // 작업 시작 성공, job_id 받고 폴링 시작
       const data = await response.json();
       if (data.job_id) {
-        setStatus('Starting'); // 서버에서 작업 시작됨
+        setStatus('Starting');
         startPolling(data.job_id);
       } else {
         throw new Error("백엔드에서 작업 ID를 반환하지 않았습니다.");
@@ -289,11 +289,10 @@ export default function Home() {
       setErrorDetail((error as Error).message || '알 수 없는 오류가 발생했습니다.');
       setTranslatedFileUrl(null);
       setIsProcessing(false);
-      stopPolling();
-      stopTimer();
-      setDisplayRemainingTime(null); // 에러 시 예상 시간 초기화
+      // 폴링 시작 전 에러이므로 stopPolling 필요 없음
+      setBackendEstimatedRemainingTime(null); // 에러 시 관련 상태 초기화
+      setCalculationTimestamp(null);
     }
-    // handleTranslate는 이제 즉시 반환하고, 실제 상태 업데이트는 폴링에서 처리
   };
 
   // Helper to render status icon and text
@@ -368,7 +367,12 @@ export default function Home() {
 
   return (
     <main className="container mx-auto p-4 md:p-8 max-w-4xl">
-      <h1 className="text-3xl font-bold mb-6 text-center text-gray-800">PDF 한국어 번역기</h1>
+      {/* --- 페이지 제목 카드 디자인 적용 --- */}
+      <div className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-6 rounded-lg shadow-md mb-8">
+        <h1 className="text-3xl font-bold text-center">PDF 한국어 번역기</h1>
+        <p className="text-center text-blue-100 mt-1 text-sm">영문 PDF를 한국어로 번역합니다.</p>
+      </div>
+      {/* --- 카드 디자인 끝 --- */}
 
       <div className="bg-white p-6 rounded-lg shadow-md mb-6">
         <div className="mb-4">
