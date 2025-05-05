@@ -144,6 +144,7 @@ class TranslateConverter(PDFConverterEx):
         envs: Dict = None,
         prompt: Template = None,
         ignore_cache: bool = False,
+        prompt_options: Optional[Dict] = None,
     ) -> None:
         super().__init__(rsrcmgr)
         self.vfont = vfont
@@ -152,6 +153,7 @@ class TranslateConverter(PDFConverterEx):
         self.layout = layout
         self.noto_name = noto_name
         self.noto = noto
+        self.prompt_options = prompt_options
         self.translator: BaseTranslator = None
         # e.g. "ollama:gemma2:9b" -> ["ollama", "gemma2:9b"]
         param = service.split(":", 1)
@@ -346,11 +348,12 @@ class TranslateConverter(PDFConverterEx):
 
         # worker 함수는 asyncio.run 유지
         @retry(wait=wait_fixed(1))
-        async def worker(s: str):
+        async def worker(s: str, options: Optional[Dict] = None):
             if not s.strip() or re.match(r"^\{v\d+\}$", s):
                 return s
             try:
-                return await self.translator.translate(s)
+                # asyncio.run 제거, await 사용
+                return await self.translator.translate(s, prompt_options=options)
             except Exception as e:
                 log.exception(f"Error in worker translating '{s[:50]}...': {e}")
                 return s # 오류 시 원본 반환
@@ -358,23 +361,44 @@ class TranslateConverter(PDFConverterEx):
         async def run_workers_concurrently():
             loop = asyncio.get_running_loop()
             tasks = []
+            # 각 작업에 고유한 prompt_options 전달 (동일한 객체지만 명시적)
             for s in sstk:
-                 # worker 코루틴 생성 시 prompt_options 제거
-                 tasks.append(loop.create_task(worker(s)))
+                 # worker 코루틴 생성 시 prompt_options 전달
+                 tasks.append(loop.create_task(worker(s, self.prompt_options)))
             # 모든 작업이 완료될 때까지 기다리고 결과 수집
             return await asyncio.gather(*tasks, return_exceptions=True)
 
         async def run_workers_sequentially():
             results_seq = []
             for s in sstk:
-                # worker 호출 시 prompt_options 제거
-                result = await worker(s)
+                # 각 작업에 고유한 prompt_options 전달
+                result = await worker(s, self.prompt_options)
                 results_seq.append(result)
             return results_seq
 
         try:
             if self.thread > 0:
+                # 별도 스레드에서 비동기 이벤트 루프 실행 (기존 방식 유지 어려움)
+                # ThreadPoolExecutor와 asyncio를 직접 섞는 것은 복잡하고 비효율적.
+                # 여기서는 간단하게 동기 방식으로 실행하도록 변경 (추후 개선 필요)
                 log.warning("Running translation sequentially due to complexity with threads and async worker.")
+                results = asyncio.run(run_workers_sequentially())
+
+                # --- 이전 ThreadPoolExecutor 로직 주석 처리 또는 제거 ---
+                # with concurrent.futures.ThreadPoolExecutor(max_workers=self.thread) as executor:
+                #     futures = {executor.submit(asyncio.run, worker(s, self.prompt_options)): i for i, s in enumerate(sstk)}
+                #     for future in concurrent.futures.as_completed(futures):
+                #         idx = futures[future]
+                #         try:
+                #             res = future.result()
+                #             if not isinstance(res, Exception):
+                #                 results[idx] = res
+                #             else:
+                #                 log.error(f"Error from worker future {idx}: {res}")
+                #         except Exception as exc:
+                #             log.exception("Exception getting result from future: %s", exc)
+
+            else: # 동기 실행 (thread=0)
                 results = asyncio.run(run_workers_sequentially())
 
         except Exception as e:

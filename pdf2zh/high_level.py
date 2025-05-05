@@ -85,6 +85,7 @@ def translate_patch(
     envs: Dict = None,
     prompt: Template = None,
     ignore_cache: bool = False,
+    prompt_options: Optional[Dict] = None,
     **kwarg: Any,
 ) -> None:
     rsrcmgr = PDFResourceManager()
@@ -103,6 +104,7 @@ def translate_patch(
         envs,
         prompt,
         ignore_cache,
+        prompt_options=prompt_options,
     )
 
     assert device is not None
@@ -182,6 +184,7 @@ def translate_stream(
     prompt: Template = None,
     skip_subset_fonts: bool = False,
     ignore_cache: bool = False,
+    prompt_options: Optional[Dict] = None,
     **kwarg: Any,
 ):
     font_list = [("tiro", None)]
@@ -229,7 +232,7 @@ def translate_stream(
     fp = io.BytesIO()
 
     doc_zh.save(fp)
-    obj_patch: dict = translate_patch(fp, **{k: v for k, v in locals().items() if k != 'prompt_options'})
+    obj_patch: dict = translate_patch(fp, **locals())
 
     for obj_id, ops_new in obj_patch.items():
         # ops_old=doc_en.xref_stream(obj_id)
@@ -317,6 +320,7 @@ def translate(
     prompt: Template = None,
     skip_subset_fonts: bool = False,
     ignore_cache: bool = False,
+    prompt_options: Optional[Dict] = None,
     **kwarg: Any,
 ):
     if not files:

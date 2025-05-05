@@ -134,62 +134,82 @@ class BaseTranslator:
         """
         self.cache.add_params(k, v)
 
-    async def translate(self, text: str, ignore_cache: bool = False) -> str:
+    async def translate(self, text: str, ignore_cache: bool = False, prompt_options: Optional[Dict] = None) -> str:
         """
         Translate the text asynchronously.
         :param text: text to translate
         :param ignore_cache: ignore cache
+        :param prompt_options: additional prompt options
         :return: translated text
         """
+        temp_cache = self.cache
+        if prompt_options:
+            temp_cache = copy(self.cache)
+            sorted_options = tuple(sorted(prompt_options.items()))
+            temp_cache.add_params("prompt_opts", str(sorted_options))
+
         if not (self.ignore_cache or ignore_cache):
-            cache = self.cache.get(text)
+            cache = temp_cache.get(text)
             if cache is not None:
                 return cache
 
-        translation = await self.do_translate(text)
+        translation = await self.do_translate(text, prompt_options=prompt_options)
 
-        self.cache.set(text, translation)
+        temp_cache.set(text, translation)
         return translation
 
-    async def do_translate(self, text: str) -> str:
+    async def do_translate(self, text: str, prompt_options: Optional[Dict] = None) -> str:
         """
         Actual translate text asynchronously, override this method
         :param text: text to translate
+        :param prompt_options: additional prompt options
         :return: translated text
         """
         raise NotImplementedError
 
     def prompt(
-        self,
-        text: str,
-        lang_out: str = "ko", # 기본값 ko로 변경
-        # keep_technical_terms: bool = False, # 제거됨
-        # keep_english_names: bool = False,   # 제거됨
-        custom_instructions: str = ""        # 사용자 지정 지침은 유지
+        self, text: str, prompt_template: Template | None = None, prompt_options: Optional[Dict] = None
     ) -> list[dict[str, str]]:
-        """ 번역을 위한 LLM 프롬프트를 생성합니다. """
+        if prompt_template:
+            try:
+                return [
+                    {"role": "user", "content": prompt_template.safe_substitute({
+                        "lang_in": self.lang_in,
+                        "lang_out": self.lang_out,
+                        "text": text,
+                    })}
+                ]
+            except Exception:
+                logging.exception("Error parsing prompt template, using default prompt.")
 
-        # 대상 언어 이름 설정 (한국어 외 다른 언어 지원 시 확장 가능)
-        target_lang_map = {"ko": "한국어", "zh": "중국어"}
-        target_lang_name = target_lang_map.get(lang_out, lang_out.upper())
+        system_prompt = "You are a professional, authentic machine translation engine. Only Output the translated text, do not include any other text."
+        user_instruction = f"Translate the following markdown source text from {self.lang_in} to {self.lang_out}."
 
-        # --- 기본 시스템 프롬프트 (한국어) ---
-        sys_prompt_ko = f"""당신은 PDF 문서 번역에 특화된 숙련된 번역가입니다.
-주어진 영문 텍스트를 {target_lang_name}로 정확하게 번역하는 것이 당신의 임무입니다.
-목록, 코드 블록, 굵은 글씨 같은 마크다운 서식을 포함하여 원본 형식을 최대한 유지하세요.
-해당 분야에서 일반적으로 사용되는 기술 용어는 원문(영어) 그대로 유지하세요.
-영어 이름(사람 이름, 회사 이름 등)은 번역하지 말고 영어 원문 그대로 유지하세요.""" # 요청하신 문구 포함 및 구체화
+        instructions = []
+        keep_terms = prompt_options.get("keep_technical_terms", False) if prompt_options else False
+        keep_names = prompt_options.get("keep_english_names", False) if prompt_options else False
 
-        # --- 사용자 지정 지침 추가 ---
-        if custom_instructions:
-            sys_prompt_ko += f"\n\n다음 추가 지침을 주의 깊게 따라주세요:\n{custom_instructions}"
+        if keep_terms and keep_names:
+            instructions.append("- Strictly preserve BOTH technical terms/vocabulary AND proper names (e.g., people, places, brands) in their original form and language.")
+        elif keep_terms:
+            instructions.append("- Strictly preserve technical terms and specialized vocabulary in their original form.")
+        elif keep_names:
+            instructions.append("- Strictly preserve proper names (e.g., people, places, organizations, brands) in their original form and language.")
 
-        # --- 최종 프롬프트 생성 ---
-        # 시스템 프롬프트와 번역할 텍스트를 결합
-        final_prompt_content = f"{sys_prompt_ko}\n\n다음 텍스트를 번역하세요:\n\n{text}"
+        if prompt_options:
+            custom = prompt_options.get("custom_instructions", "").strip()
+            if custom:
+                instructions.append(f"- Follow these additional instructions: {custom}")
 
-        # --- 메시지 객체 리스트로 반환 ---
-        return [{"role": "user", "content": final_prompt_content}]
+        if instructions:
+            user_instruction += "\\n\\nTranslation Instructions:\\n" + "\\n".join(instructions)
+
+        user_instruction += "\\n\\n- Keep the formula notation {v*} unchanged."
+        user_instruction += "\\n- Output translation directly without any additional text."
+
+        final_prompt = f"{user_instruction}\\n\\nSource Text:\\n'''{text}'''\\n\\nTranslated Text ({self.lang_out}):"
+
+        return [{"role": "user", "content": final_prompt}]
 
     def __str__(self):
         return f"{self.name} {self.lang_in} {self.lang_out} {self.model}"
@@ -483,11 +503,11 @@ class OpenAITranslator(BaseTranslator):
             f"(Attempt {retry_state.attempt_number}/100)"
         ),
     )
-    async def do_translate(self, text: str) -> str:
+    async def do_translate(self, text: str, prompt_options: Optional[Dict] = None) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             **self.options,
-            messages=self.prompt(text, self.prompttext),
+            messages=self.prompt(text, self.prompttext, prompt_options=prompt_options),
         )
         if not response.choices:
             if hasattr(response, "error"):
@@ -533,7 +553,7 @@ class AzureOpenAITranslator(BaseTranslator):
             f"(Attempt {retry_state.attempt_number}/100)"
         ),
     )
-    async def do_translate(self, text: str) -> str:
+    async def do_translate(self, text: str, prompt_options: Optional[Dict] = None) -> str:
         try:
             deployment = get_next_azure_deployment()
             logger.debug(f"Using Azure deployment: {deployment['name']} ({deployment['model']}) at {deployment['endpoint']}")
@@ -550,7 +570,7 @@ class AzureOpenAITranslator(BaseTranslator):
                 api_key=deployment['key'],
                 api_version=deployment['api_version'],
             ) as async_client:
-                messages = self.prompt(text, self.prompt_template)
+                messages = self.prompt(text, self.prompt_template, prompt_options=prompt_options)
 
                 response = await async_client.chat.completions.create(
                     model=deployment['name'],
