@@ -411,7 +411,7 @@ class TranslateConverter(PDFConverterEx):
             if isinstance(res, Exception):
                 log.error(f"Error during translation for segment {i}: {res}")
                 processed_results.append(sstk[i]) # 오류 시 원본 사용
-                else:
+            else:
                 processed_results.append(res)
         results = processed_results
 
