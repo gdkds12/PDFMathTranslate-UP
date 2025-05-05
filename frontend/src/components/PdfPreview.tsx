@@ -7,6 +7,13 @@ import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
 import { ChevronLeftIcon, ChevronRightIcon } from '@heroicons/react/24/solid'; // Icons for navigation
 
+// --- 워커 설정 (가장 확실한 방법: public 폴더 사용) ---
+// Next.js의 public 폴더에 있는 워커 파일을 직접 참조합니다.
+// 이 파일을 node_modules/pdfjs-dist/build/pdf.worker.min.js 에서
+// frontend/public/ 폴더로 복사해야 합니다.
+pdfjs.GlobalWorkerOptions.workerSrc = `/pdf.worker.min.js`;
+// --- 워커 설정 끝 ---
+
 // Export the props interface
 export interface PdfPreviewProps {
   file: File | string; // <<< File 객체 또는 URL 문자열 허용
@@ -33,12 +40,6 @@ export default function PdfPreview({ file, onError }: PdfPreviewProps) { // <<< 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
-
-  // --- 워커 옵션 정의 --- 
-  const options = {
-    workerSrc: `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`
-  };
-  // --- 워커 옵션 끝 --- 
 
   function onDocumentLoadSuccess({ numPages }: { numPages: number }): void {
     setNumPages(numPages);
@@ -75,7 +76,6 @@ export default function PdfPreview({ file, onError }: PdfPreviewProps) { // <<< 
       <div className="pdf-container max-w-full overflow-x-auto bg-gray-100 p-2 sm:p-4 rounded-md shadow-inner flex flex-col items-center border border-gray-200 min-h-[600px]">
         <Document
           file={file}
-          options={options}
           onLoadSuccess={onDocumentLoadSuccess}
           onLoadError={handleLoadError}
           loading={<div className="flex justify-center items-center min-h-[600px]"><p className="text-sm text-gray-500">미리보기 로딩 중...</p></div>}
