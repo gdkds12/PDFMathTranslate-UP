@@ -143,10 +143,9 @@ class BaseTranslator:
         :return: translated text
         """
         temp_cache = self.cache
-        if prompt_options:
+        if prompt_options and prompt_options.get("custom_instructions"):
             temp_cache = copy(self.cache)
-            sorted_options = tuple(sorted(prompt_options.items()))
-            temp_cache.add_params("prompt_opts", str(sorted_options))
+            temp_cache.add_params("custom_instructions", prompt_options["custom_instructions"])
 
         if not (self.ignore_cache or ignore_cache):
             cache = temp_cache.get(text)
@@ -186,15 +185,7 @@ class BaseTranslator:
         user_instruction = f"Translate the following markdown source text from {self.lang_in} to {self.lang_out}."
 
         instructions = []
-        keep_terms = prompt_options.get("keep_technical_terms", False) if prompt_options else False
-        keep_names = prompt_options.get("keep_english_names", False) if prompt_options else False
-
-        if keep_terms and keep_names:
-            instructions.append("- Strictly preserve BOTH technical terms/vocabulary AND proper names (e.g., people, places, brands) in their original form and language.")
-        elif keep_terms:
-            instructions.append("- Strictly preserve technical terms and specialized vocabulary in their original form.")
-        elif keep_names:
-            instructions.append("- Strictly preserve proper names (e.g., people, places, organizations, brands) in their original form and language.")
+        instructions.append("- Strictly preserve proper names (e.g., people, places, organizations, brands) in their original form and language.")
 
         if prompt_options:
             custom = prompt_options.get("custom_instructions", "").strip()

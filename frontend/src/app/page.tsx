@@ -12,6 +12,22 @@ const PdfPreview = dynamic<PdfPreviewProps>(() => import('@/components/PdfPrevie
   loading: () => <p className="text-center text-gray-500 mt-4">미리보기 로딩 중...</p>, // Optional loading indicator
 });
 
+// --- 시간 포맷팅 함수 추가 ---
+function formatTime(totalSeconds: number | null | undefined): string {
+  if (totalSeconds === null || totalSeconds === undefined || totalSeconds < 0) {
+    return '';
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.floor(totalSeconds % 60);
+  if (minutes > 0) {
+    return `약 ${minutes}분 ${seconds}초 남음`;
+  } else if (seconds > 0) {
+    return `약 ${seconds}초 남음`;
+  }
+  return '잠시만 기다려주세요...'; // 0초일 때
+}
+// --- 포맷팅 함수 끝 ---
+
 export default function Home() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [pageRange, setPageRange] = useState<string>('');
@@ -27,11 +43,15 @@ export default function Home() {
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // 폴링 인터벌 ID 저장
   // --- 상태 폴링 끝 ---
 
-  // --- 새로운 상태 변수 추가 ---
-  const [keepTechnicalTerms, setKeepTechnicalTerms] = useState<boolean>(false);
-  const [keepEnglishNames, setKeepEnglishNames] = useState<boolean>(false);
+  // --- 번역 옵션 상태 변수 제거 ---
+  // const [keepTechnicalTerms, setKeepTechnicalTerms] = useState<boolean>(false);
+  // const [keepEnglishNames, setKeepEnglishNames] = useState<boolean>(false);
   const [customInstructions, setCustomInstructions] = useState<string>('');
-  // --- 새로운 상태 변수 끝 ---
+  // --- 제거 끝 ---
+
+  // --- 예상 시간 상태 추가 ---
+  const [estimatedRemainingTime, setEstimatedRemainingTime] = useState<number | null>(null);
+  // --- 상태 추가 끝 ---
 
   // Set the worker source globally when the page mounts on the client
   // Use useEffect to ensure it runs only once on the client side
@@ -49,10 +69,11 @@ export default function Home() {
       setCurrentPage(0);
       setTotalPages(0);
 
-      // --- 파일 변경 시 새 옵션 상태 초기화 ---
-      setKeepTechnicalTerms(false);
-      setKeepEnglishNames(false);
+      // --- 옵션 상태 초기화 (customInstructions만) ---
+      // setKeepTechnicalTerms(false); // 제거
+      // setKeepEnglishNames(false); // 제거
       setCustomInstructions('');
+      setEstimatedRemainingTime(null); // <<< 예상 시간 초기화
       // --- 초기화 끝 ---
 
       if (pollingIntervalRef.current) {
@@ -92,6 +113,10 @@ export default function Home() {
       setTotalPages(data.total_pages || 0);
       setErrorDetail(data.error || null);
 
+      // --- 예상 시간 상태 업데이트 ---
+      setEstimatedRemainingTime(data.estimated_remaining_time_seconds ?? null); // nullish coalescing 사용
+      // --- 업데이트 끝 ---
+
       if (data.status === 'Done') {
         console.log("Translation done, stopping polling.");
         setTranslatedFileUrl(`http://localhost:8000/api/translate/download/${currentJobId}`);
@@ -109,6 +134,7 @@ export default function Home() {
       setErrorDetail('상태 폴링 중 연결 오류 발생.');
       stopPolling();
       setIsProcessing(false);
+      setEstimatedRemainingTime(null); // 에러 시 예상 시간 초기화
     }
   };
   // --- 폴링 함수 끝 ---
@@ -158,12 +184,11 @@ export default function Home() {
     if (pageRange.trim()) {
       formData.append('pages', pageRange.trim());
     }
-    // --- 새로운 옵션 FormData에 추가 ---
-    // 백엔드에서 받을 키 이름은 추후 협의 필요 (예: keep_terms, keep_names, instructions)
-    formData.append('keep_technical_terms', String(keepTechnicalTerms)); // boolean을 문자열로
-    formData.append('keep_english_names', String(keepEnglishNames));
+    // --- FormData에서 옵션 제거 (customInstructions만 남김) ---
+    // formData.append('keep_technical_terms', String(keepTechnicalTerms)); // 제거
+    // formData.append('keep_english_names', String(keepEnglishNames)); // 제거
     formData.append('custom_instructions', customInstructions);
-    // --- FormData 추가 끝 ---
+    // --- 제거 끝 ---
 
     try {
       // 백엔드에 작업 시작 요청
@@ -200,6 +225,7 @@ export default function Home() {
       setTranslatedFileUrl(null);
       setIsProcessing(false);
       stopPolling();
+      setEstimatedRemainingTime(null); // 에러 시 예상 시간 초기화
     }
     // handleTranslate는 이제 즉시 반환하고, 실제 상태 업데이트는 폴링에서 처리
   };
@@ -214,12 +240,23 @@ export default function Home() {
       case 'Translating':
         // 진행률 표시 추가
         const progress = totalPages > 0 ? Math.round((currentPage / totalPages) * 100) : 0;
+        // --- 예상 시간 표시 추가 ---
+        const timeEstimateString = estimatedRemainingTime !== null && estimatedRemainingTime >= 0
+                                     ? formatTime(estimatedRemainingTime)
+                                     : '';
+        // --- 추가 끝 ---
         return (
           <div className="w-full">
-            <span className="flex items-center text-sm text-blue-600 mb-1">
-              <ClockIcon className="w-4 h-4 mr-1 animate-spin" />
-              Translating page {currentPage} of {totalPages}...
-            </span>
+            <div className="flex justify-between items-center mb-1"> {/* Flexbox 사용 */}
+              <span className="flex items-center text-sm text-blue-600">
+                <ClockIcon className="w-4 h-4 mr-1 animate-spin" />
+                Translating page {currentPage} of {totalPages}...
+              </span>
+              {/* 예상 시간 표시 (오른쪽 정렬) */}
+              {timeEstimateString && (
+                <span className="text-xs text-gray-500">{timeEstimateString}</span>
+              )}
+            </div>
             {/* Progress Bar */}
             <div className="w-full bg-gray-200 rounded-full h-1.5">
               <div className="bg-blue-600 h-1.5 rounded-full transition-all duration-300 ease-in-out" style={{ width: `${progress}%` }}></div>
@@ -286,67 +323,21 @@ export default function Home() {
             <p className="text-xs text-gray-500 mt-1">쉼표(,)로 구분, 하이픈(-)으로 범위 지정</p>
           </div>
 
-          {/* --- 3. 번역 옵션 추가 (위치 수정) --- */}
-          <div className="space-y-3">
-             <label className="block text-sm font-semibold text-gray-700">3. 번역 옵션 (선택)</label>
-             <div className="relative flex items-start">
-               <div className="flex h-6 items-center">
-                 <input
-                   id="keepTechnicalTerms"
-                   aria-describedby="keepTechnicalTerms-description"
-                   name="keepTechnicalTerms"
-                   type="checkbox"
-                   checked={keepTechnicalTerms}
-                   onChange={(e) => setKeepTechnicalTerms(e.target.checked)}
-                   disabled={isProcessing}
-                   className={`h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600 ${isProcessing ? 'cursor-not-allowed opacity-50' : ''}`}
-                 />
-               </div>
-               <div className="ml-3 text-sm leading-6">
-                 <label htmlFor="keepTechnicalTerms" className={`font-medium text-gray-900 ${isProcessing ? 'cursor-not-allowed' : ''}`}>
-                   전문 용어 번역하지 않기
-                 </label>
-                 {/* <p id="keepTechnicalTerms-description" className="text-gray-500">예: 모델 이름, 특정 기술 용어 등</p> */}
-               </div>
-             </div>
-             <div className="relative flex items-start">
-               <div className="flex h-6 items-center">
-                 <input
-                   id="keepEnglishNames"
-                   aria-describedby="keepEnglishNames-description"
-                   name="keepEnglishNames"
-                   type="checkbox"
-                   checked={keepEnglishNames}
-                   onChange={(e) => setKeepEnglishNames(e.target.checked)}
-                   disabled={isProcessing}
-                   className={`h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-600 ${isProcessing ? 'cursor-not-allowed opacity-50' : ''}`}
-                 />
-               </div>
-               <div className="ml-3 text-sm leading-6">
-                 <label htmlFor="keepEnglishNames" className={`font-medium text-gray-900 ${isProcessing ? 'cursor-not-allowed' : ''}`}>
-                   영문 이름 번역하지 않기
-                 </label>
-                 {/* <p id="keepEnglishNames-description" className="text-gray-500">예: 사람 이름, 고유 명사 등</p> */}
-               </div>
-             </div>
-           </div>
-           {/* --- 번역 옵션 끝 --- */}
-
-           {/* --- 4. 세부 지침 추가 (위치 수정) --- */}
-           <div>
-             <label htmlFor="customInstructions" className="block text-sm font-semibold text-gray-700 mb-2">4. 세부 지침 (선택)</label>
-             <textarea
-               id="customInstructions"
-               name="customInstructions"
-               rows={3}
-               placeholder="번역 스타일, 특정 단어 처리 방식 등 추가적인 지시사항을 입력하세요. (예: '모든 인용구는 원문 그대로 유지해주세요', 'Chapter는 장으로 번역해주세요')"
-               value={customInstructions}
-               onChange={(e) => setCustomInstructions(e.target.value)}
-               disabled={isProcessing}
-               className={`block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6 transition ${isProcessing ? 'bg-gray-100 cursor-not-allowed opacity-50' : 'bg-white'}`}
-             />
-           </div>
-           {/* --- 세부 지침 끝 --- */}
+          {/* --- 3. 세부 지침 추가 (번호 수정) --- */}
+          <div>
+            <label htmlFor="customInstructions" className="block text-sm font-semibold text-gray-700 mb-2">3. 세부 지침 (선택)</label> {/* 번호 3으로 수정 */}
+            <textarea
+              id="customInstructions"
+              name="customInstructions"
+              rows={3}
+              placeholder="번역 스타일, 특정 단어 처리 방식 등 추가적인 지시사항을 입력하세요. (예: '모든 인용구는 원문 그대로 유지해주세요', 'Chapter는 장으로 번역해주세요')"
+              value={customInstructions}
+              onChange={(e) => setCustomInstructions(e.target.value)}
+              disabled={isProcessing}
+              className={`block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6 transition ${isProcessing ? 'bg-gray-100 cursor-not-allowed opacity-50' : 'bg-white'}`}
+            />
+          </div>
+          {/* --- 세부 지침 끝 --- */}
 
           {/* Translate Button */}
           <div className="pt-2">

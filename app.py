@@ -12,6 +12,7 @@ import shutil # 파일 이동을 위해 추가
 import aiofiles # 비동기 파일 저장을 위해 추가
 import re # 페이지 파싱용 정규식
 from fastapi.middleware.cors import CORSMiddleware # CORS 미들웨어 임포트
+import asyncio
 
 # .env 파일 로드 (translator.py에서도 로드하지만, 앱 시작 시에도 명시적으로 로드하는 것이 안전)
 load_dotenv()
@@ -19,6 +20,10 @@ load_dotenv()
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- 페이지당 평균 번역 시간 상수 정의 ---
+AVERAGE_SECONDS_PER_PAGE = 20.0 # <<< 20초로 변경
+# --- 상수 정의 끝 ---
 
 # pdf2zh 모듈 임포트
 try:
@@ -130,41 +135,40 @@ def translation_progress_callback(job_id: str, progress: Any):
             job_status[job_id]["current_page"] = current
             job_status[job_id]["total_pages"] = total
             job_status[job_id]["status"] = "Translating"
+
+            # --- 예상 총 시간 최초 계산 (total 확인 시, 변경된 상수 사용) ---
+            if not job_status[job_id].get("estimated_total_time"):
+                job_status[job_id]["estimated_total_time"] = total * AVERAGE_SECONDS_PER_PAGE # <<< 20초 사용
+            # --- 계산 끝 ---
             # logger.debug(f"Job {job_id} progress: {current}/{total}") # 너무 자주 로깅될 수 있음
     except Exception as e:
         # 콜백 내부 오류는 로깅만 하고 무시 (번역 자체에 영향 주지 않도록)
         logger.warning(f"Error in translation callback for job {job_id}: {e}")
-# --- 콜백 함수 끝 ---
+# --- 콜백 함수 수정 끝 ---
 
 # --- perform_translation_sync 함수 수정 (백그라운드 실행 및 상태 업데이트) ---
 def perform_translation_sync(
     input_path: Path,
     job_id: str,
     pages_str: str | None,
-    # 새로운 옵션 파라미터 추가
-    keep_technical_terms_str: str,
-    keep_english_names_str: str,
     custom_instructions: str
 ):
     """ 실제 번역 작업을 *동기적으로* 수행하는 함수 (파일 이동 로직 추가) """
     start_time = time.time()
-    # 문자열 bool을 실제 bool로 변환
-    keep_technical_terms = keep_technical_terms_str.lower() == 'true'
-    keep_english_names = keep_english_names_str.lower() == 'true'
+    estimated_total_time: float | None = None # <<< 예상 총 시간 변수 추가
 
     job_status[job_id] = {
         "status": "Starting",
         "total_pages": 0,
         "current_page": 0,
         "start_time": start_time,
+        "estimated_total_time": estimated_total_time, # <<< 상태에 추가
         "end_time": None,
         "error": None,
         "output_file": None,
         # 옵션 정보 저장 (디버깅 또는 추후 활용 목적)
         "options": {
             "pages": pages_str,
-            "keep_technical_terms": keep_technical_terms,
-            "keep_english_names": keep_english_names,
             "custom_instructions": custom_instructions,
         }
     }
@@ -197,13 +201,13 @@ def perform_translation_sync(
         # 페이지 파싱
         parsed_pages = parse_page_string(pages_str)
 
-        # --- 프롬프트 옵션 딕셔너리 생성 ---
+        # --- 프롬프트 옵션 딕셔너리 (custom_instructions만 포함) ---
         prompt_options = {
-            "keep_technical_terms": keep_technical_terms,
-            "keep_english_names": keep_english_names,
             "custom_instructions": custom_instructions,
         }
-        # --- 프롬프트 옵션 생성 끝 ---
+        # 만약 custom_instructions도 없다면 빈 dict 전달
+        if not custom_instructions:
+            prompt_options = {} # 또는 None 전달 (라이브러리 처리 방식에 따라)
 
         # pdf2zh.high_level.translate 호출 시 새 인자(prompt_options) 추가
         translate(
@@ -282,10 +286,7 @@ async def translate_pdf(
     background_tasks: BackgroundTasks,
     pdf: UploadFile = File(...),
     pages: Optional[str] = Form(None), # Optional 명시적 사용
-    # 새로운 Form 파라미터 추가 (기본값 설정)
-    keep_technical_terms: str = Form('false'),
-    keep_english_names: str = Form('false'),
-    custom_instructions: str = Form('')
+    custom_instructions: str = Form('') # 이것만 남김
 ):
     if pdf.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Invalid file type. Only PDF is allowed.")
@@ -309,9 +310,7 @@ async def translate_pdf(
         input_path,
         job_id,
         pages,
-        keep_technical_terms, # 전달
-        keep_english_names,   # 전달
-        custom_instructions   # 전달
+        custom_instructions   # 이것만 전달
     )
 
     # 작업 ID 반환
@@ -319,17 +318,61 @@ async def translate_pdf(
 
 # --- 상태 조회 엔드포인트 추가 ---
 @app.get("/api/translate/status/{job_id}")
-async def get_translation_status(job_id: str, background_tasks: BackgroundTasks):
+async def get_translation_status(job_id: str):
     status_info = job_status.get(job_id)
     if not status_info:
         raise HTTPException(status_code=404, detail="Job ID not found.")
 
+    estimated_remaining_time_seconds: float | None = None
+    current_status = status_info.get("status")
+    current_page = status_info.get("current_page", 0)
+    total_pages = status_info.get("total_pages", 0)
+    start_time = status_info.get("start_time")
+    initial_estimated_total_time = status_info.get("estimated_total_time")
+
+    if current_status == "Translating" and total_pages > 0 and start_time and initial_estimated_total_time:
+        try:
+            current_time = time.time()
+            elapsed_time = current_time - start_time
+
+            # 1. 초기 선형 감소 예상 시간
+            linear_remaining_time = max(0, initial_estimated_total_time - elapsed_time)
+
+            # 2. 보정 로직 (첫 페이지 완료 후부터 적용)
+            if current_page > 0 and elapsed_time > 0:
+                progress_pct = min(1.0, current_page / total_pages) # 진행률 (0 ~ 1)
+                current_speed_per_page = elapsed_time / current_page # 현재까지의 실제 페이지당 평균 시간
+                adjusted_total_time = current_speed_per_page * total_pages # 현재 속도 기반 총 예상 시간
+
+                # 3. 초기 예상과 현재 속도 기반 예상을 블렌딩 (진행률에 따라 가중치 조절)
+                # weight = progress_pct # 단순 선형 가중치
+                # 좀 더 부드러운 보정을 위해 가중치 조절 (예: 제곱 사용)
+                weight = progress_pct ** 2
+                smoothed_total_time = initial_estimated_total_time * (1 - weight) + adjusted_total_time * weight
+
+                # 4. 보정된 총 시간으로 최종 잔여 시간 계산
+                corrected_remaining_time = max(0, smoothed_total_time - elapsed_time)
+                estimated_remaining_time_seconds = corrected_remaining_time
+            else:
+                # 작업 시작 직후 (첫 페이지 처리 전)에는 선형 감소 시간 사용
+                estimated_remaining_time_seconds = linear_remaining_time
+
+        except ZeroDivisionError:
+             # current_page가 0인 경우 등 나눗셈 오류 방지
+             estimated_remaining_time_seconds = max(0, initial_estimated_total_time - elapsed_time) if initial_estimated_total_time and elapsed_time else None
+        except Exception as e:
+            logger.warning(f"Error calculating estimated remaining time for job {job_id}: {e}")
+            estimated_remaining_time_seconds = None # 오류 시 None 반환
+    elif current_status == "Done":
+        estimated_remaining_time_seconds = 0
+
     response = {
         "job_id": job_id,
         "status": status_info["status"],
-        "current_page": status_info["current_page"],
-        "total_pages": status_info["total_pages"],
+        "current_page": current_page, # <<< .get() 제거 가능 (위에서 이미 처리)
+        "total_pages": total_pages,   # <<< .get() 제거 가능
         "error": status_info["error"],
+        "estimated_remaining_time_seconds": estimated_remaining_time_seconds,
     }
 
     # 작업 완료 시 다운로드 URL 제공 (이 엔드포인트에서 직접 파일을 보내지 않음)
