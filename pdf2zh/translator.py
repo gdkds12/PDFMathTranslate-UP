@@ -6,7 +6,7 @@ import re
 import unicodedata
 from copy import copy
 from string import Template
-from typing import cast, Dict
+from typing import cast, Dict, Optional
 import itertools
 import deepl
 import ollama
@@ -138,6 +138,7 @@ class BaseTranslator:
         """
         Translate the text asynchronously.
         :param text: text to translate
+        :param ignore_cache: ignore cache
         :return: translated text
         """
         if not (self.ignore_cache or ignore_cache):
@@ -146,6 +147,7 @@ class BaseTranslator:
                 return cache
 
         translation = await self.do_translate(text)
+
         self.cache.set(text, translation)
         return translation
 
@@ -158,43 +160,36 @@ class BaseTranslator:
         raise NotImplementedError
 
     def prompt(
-        self, text: str, prompt_template: Template | None = None
+        self,
+        text: str,
+        lang_out: str = "ko", # 기본값 ko로 변경
+        # keep_technical_terms: bool = False, # 제거됨
+        # keep_english_names: bool = False,   # 제거됨
+        custom_instructions: str = ""        # 사용자 지정 지침은 유지
     ) -> list[dict[str, str]]:
-        try:
-            return [
-                {
-                    "role": "user",
-                    "content": cast(Template, prompt_template).safe_substitute(
-                        {
-                            "lang_in": self.lang_in,
-                            "lang_out": self.lang_out,
-                            "text": text,
-                        }
-                    ),
-                }
-            ]
-        except AttributeError:  # `prompt_template` is None
-            pass
-        except Exception:
-            logging.exception("Error parsing prompt, use the default prompt.")
+        """ 번역을 위한 LLM 프롬프트를 생성합니다. """
 
-        return [
-            {
-                "role": "user",
-                "content": (
-                    "You are a professional, authentic machine translation engine. "
-                    "Only Output the translated text, do not include any other text."
-                    "\n\n"
-                    f"Translate the following markdown source text to {self.lang_out}. "
-                    "Keep the formula notation {v*} unchanged. "
-                    "Output translation directly without any additional text."
-                    "\n\n"
-                    f"Source Text: {text}"
-                    "\n\n"
-                    "Translated Text:"
-                ),
-            },
-        ]
+        # 대상 언어 이름 설정 (한국어 외 다른 언어 지원 시 확장 가능)
+        target_lang_map = {"ko": "한국어", "zh": "중국어"}
+        target_lang_name = target_lang_map.get(lang_out, lang_out.upper())
+
+        # --- 기본 시스템 프롬프트 (한국어) ---
+        sys_prompt_ko = f"""당신은 PDF 문서 번역에 특화된 숙련된 번역가입니다.
+주어진 영문 텍스트를 {target_lang_name}로 정확하게 번역하는 것이 당신의 임무입니다.
+목록, 코드 블록, 굵은 글씨 같은 마크다운 서식을 포함하여 원본 형식을 최대한 유지하세요.
+해당 분야에서 일반적으로 사용되는 기술 용어는 원문(영어) 그대로 유지하세요.
+영어 이름(사람 이름, 회사 이름 등)은 번역하지 말고 영어 원문 그대로 유지하세요.""" # 요청하신 문구 포함 및 구체화
+
+        # --- 사용자 지정 지침 추가 ---
+        if custom_instructions:
+            sys_prompt_ko += f"\n\n다음 추가 지침을 주의 깊게 따라주세요:\n{custom_instructions}"
+
+        # --- 최종 프롬프트 생성 ---
+        # 시스템 프롬프트와 번역할 텍스트를 결합
+        final_prompt_content = f"{sys_prompt_ko}\n\n다음 텍스트를 번역하세요:\n\n{text}"
+
+        # --- 메시지 객체 리스트로 반환 ---
+        return [{"role": "user", "content": final_prompt_content}]
 
     def __str__(self):
         return f"{self.name} {self.lang_in} {self.lang_out} {self.model}"
@@ -488,7 +483,7 @@ class OpenAITranslator(BaseTranslator):
             f"(Attempt {retry_state.attempt_number}/100)"
         ),
     )
-    async def do_translate(self, text) -> str:
+    async def do_translate(self, text: str) -> str:
         response = self.client.chat.completions.create(
             model=self.model,
             **self.options,
@@ -538,7 +533,7 @@ class AzureOpenAITranslator(BaseTranslator):
             f"(Attempt {retry_state.attempt_number}/100)"
         ),
     )
-    async def do_translate(self, text) -> str:
+    async def do_translate(self, text: str) -> str:
         try:
             deployment = get_next_azure_deployment()
             logger.debug(f"Using Azure deployment: {deployment['name']} ({deployment['model']}) at {deployment['endpoint']}")

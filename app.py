@@ -3,7 +3,7 @@ import uuid
 import logging
 import time # 작업 시간 측정용 (선택 사항)
 from pathlib import Path
-from typing import Dict, Any # 타입 힌팅 추가
+from typing import Dict, Any, Optional # 타입 힌팅 추가, Optional 추가
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 from dotenv import load_dotenv
@@ -133,10 +133,17 @@ def translation_progress_callback(job_id: str, progress: Any):
         logger.warning(f"Error in translation callback for job {job_id}: {e}")
 # --- 콜백 함수 끝 ---
 
-# --- perform_translation 함수 수정 (백그라운드 실행 및 상태 업데이트) ---
-def perform_translation_sync(input_path: Path, job_id: str, pages_str: str | None):
+# --- perform_translation_sync 함수 수정 (백그라운드 실행 및 상태 업데이트) ---
+def perform_translation_sync(
+    input_path: Path,
+    job_id: str,
+    pages_str: str | None,
+    # custom_instructions 파라미터 복원
+    custom_instructions: str
+):
     """ 실제 번역 작업을 *동기적으로* 수행하는 함수 (Background Task용) """
     start_time = time.time()
+
     job_status[job_id] = {
         "status": "Starting",
         "total_pages": 0,
@@ -144,10 +151,17 @@ def perform_translation_sync(input_path: Path, job_id: str, pages_str: str | Non
         "start_time": start_time,
         "end_time": None,
         "error": None,
-        "output_file": None
+        "output_file_mono": None,
+        "output_file_dual": None,
+        # 옵션 정보 저장 복원 (custom_instructions만)
+        "options": {
+            "pages": pages_str,
+            # "keep_technical_terms": keep_technical_terms,
+            # "keep_english_names": keep_english_names,
+            "custom_instructions": custom_instructions, # 복원
+        }
     }
 
-    # 모델 로드 확인
     if onnx_model is None:
         error_msg = "ONNX model not loaded."
         logger.error(f"{error_msg} Cannot perform translation for job {job_id}.")
@@ -157,24 +171,29 @@ def perform_translation_sync(input_path: Path, job_id: str, pages_str: str | Non
         if input_path.exists(): os.remove(input_path)
         return
 
-    output_path = None
-    dual_output_path = None
+    output_path_mono = None
+    output_path_dual = None
     try:
-        # 출력 파일 경로 설정
-        expected_output_filename = f"{input_path.stem}-mono.pdf"
-        output_path = TEMP_DIR / expected_output_filename
-        dual_output_path = TEMP_DIR / f"{input_path.stem}-dual.pdf"
-        if output_path.exists(): os.remove(output_path)
-        if dual_output_path.exists(): os.remove(dual_output_path)
+        expected_output_filename_mono = f"{input_path.stem}-mono.pdf"
+        expected_output_filename_dual = f"{input_path.stem}-dual.pdf"
+        output_path_mono = TEMP_DIR / expected_output_filename_mono
+        output_path_dual = TEMP_DIR / expected_output_filename_dual
 
-        logger.info(f"Starting background translation for {input_path} (Job ID: {job_id}) Pages: '{pages_str or 'All'}'")
+        if output_path_mono.exists(): os.remove(output_path_mono)
+        if output_path_dual.exists(): os.remove(output_path_dual)
+
+        logger.info(f"Starting background translation for {input_path} (Job ID: {job_id}) Options: {job_status[job_id]['options']}")
         job_status[job_id]["status"] = "Parsing"
-
-        # 페이지 파싱
         parsed_pages = parse_page_string(pages_str)
 
-        # pdf2zh.high_level.translate 호출 (callback 인자 추가)
-        # 이 함수는 내부적으로 시간이 오래 걸리는 동기 함수임
+        # --- 프롬프트 옵션 딕셔너리 생성 (custom_instructions만 포함) ---
+        prompt_options = {
+            # "keep_technical_terms": keep_technical_terms,
+            # "keep_english_names": keep_english_names,
+            "custom_instructions": custom_instructions, # 복원
+        }
+        # --- 프롬프트 옵션 생성 끝 ---
+
         translate(
             files=[str(input_path)],
             output=str(TEMP_DIR),
@@ -185,17 +204,22 @@ def perform_translation_sync(input_path: Path, job_id: str, pages_str: str | Non
             ignore_cache=True,
             model=onnx_model,
             thread=4,
-            callback=lambda p: translation_progress_callback(job_id, p) # 콜백 전달
+            callback=lambda p: translation_progress_callback(job_id, p),
+            prompt_options=prompt_options # <<< 복원
         )
 
-        # 번역 성공 확인
-        if output_path.exists():
-            logger.info(f"Translation complete for {job_id}. Output: {output_path}")
+        if output_path_mono.exists():
+            logger.info(f"Translation complete for {job_id}. Mono output: {output_path_mono}")
             job_status[job_id]["status"] = "Done"
-            job_status[job_id]["output_file"] = str(output_path)
+            job_status[job_id]["output_file_mono"] = str(output_path_mono)
+            if output_path_dual.exists():
+                logger.info(f"Dual output found for {job_id}: {output_path_dual}")
+                job_status[job_id]["output_file_dual"] = str(output_path_dual)
+            else:
+                 logger.warning(f"Dual output not found for {job_id} at {output_path_dual}")
         else:
             files_in_temp = list(TEMP_DIR.glob(f"{input_path.stem}*.pdf"))
-            error_msg = f"Output file not found at {output_path}. Found in temp: {files_in_temp}"
+            error_msg = f"Mono output file not found at {output_path_mono}. Found in temp: {files_in_temp}"
             logger.error(f"Translation finished for {job_id}, but {error_msg}")
             job_status[job_id]["status"] = "Error"
             job_status[job_id]["error"] = error_msg
@@ -206,22 +230,18 @@ def perform_translation_sync(input_path: Path, job_id: str, pages_str: str | Non
         job_status[job_id]["error"] = str(e)
     finally:
         job_status[job_id]["end_time"] = time.time()
-        # 임시 파일 삭제 (입력, 사용 안 된 듀얼 파일)
         if input_path.exists():
-            try: os.remove(input_path)
-            except Exception as e: logger.error(f"Error removing temp input file {input_path}: {e}")
-        if dual_output_path and dual_output_path.exists() and job_status[job_id]["status"] != "Done":
-             # 성공 시에는 translate_pdf에서 background_task로 삭제하므로 실패 시에만 여기서 삭제
-             try: os.remove(dual_output_path)
-             except Exception as e: logger.error(f"Error removing temp dual file {dual_output_path}: {e}")
-# --- perform_translation_sync 함수 끝 ---
+             try: os.remove(input_path)
+             except Exception as e: logger.error(f"Error removing temp input file {input_path}: {e}")
 
 # --- translate_pdf 엔드포인트 수정 (백그라운드 작업 시작 및 job_id 반환) ---
-@app.post("/api/translate", status_code=202) # 202 Accepted 상태 코드 사용
+@app.post("/api/translate", status_code=202)
 async def translate_pdf(
     background_tasks: BackgroundTasks,
     pdf: UploadFile = File(...),
-    pages: str | None = Form(None)
+    pages: Optional[str] = Form(None),
+    # custom_instructions Form 파라미터 복원
+    custom_instructions: str = Form('')
 ):
     if pdf.content_type != "application/pdf":
         raise HTTPException(status_code=400, detail="Invalid file type. Only PDF is allowed.")
@@ -239,19 +259,18 @@ async def translate_pdf(
         logger.exception(f"Failed to save uploaded file for job {job_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to save uploaded file.")
 
-    # --- 로드밸런싱 제거됨 (pdf2zh 내부 로직 사용) ---
+    # 백그라운드 작업 시작 시 custom_instructions 전달 복원
+    background_tasks.add_task(
+        perform_translation_sync,
+        input_path,
+        job_id,
+        pages,
+        # keep_technical_terms, # 제거됨
+        # keep_english_names,   # 제거됨
+        custom_instructions   # <<< 복원
+    )
 
-    # 백그라운드에서 번역 작업 시작
-    # 주의: BackgroundTasks는 FastAPI 프로세스 내에서 실행됨.
-    #       CPU-bound 작업이 길어지면 이벤트 루프 블로킹 가능성 있음.
-    #       매우 긴 작업이나 외부 워커 필요시 Celery 등 고려.
-    background_tasks.add_task(perform_translation_sync, input_path, job_id, pages)
-
-    # 작업 ID 반환
-    return {"job_id": job_id, "message": "Translation job started."} # 상태 폴링 엔드포인트 정보도 포함 가능
-
-    # --- 이전 동기 처리 및 FileResponse 반환 로직 제거됨 ---
-# --- translate_pdf 엔드포인트 수정 끝 ---
+    return {"job_id": job_id, "message": "Translation job started."}
 
 # --- 상태 조회 엔드포인트 추가 ---
 @app.get("/api/translate/status/{job_id}")
@@ -269,7 +288,7 @@ async def get_translation_status(job_id: str, background_tasks: BackgroundTasks)
     }
 
     # 작업 완료 시 다운로드 URL 제공 (이 엔드포인트에서 직접 파일을 보내지 않음)
-    if status_info["status"] == "Done" and status_info["output_file"]:
+    if status_info["status"] == "Done" and status_info["output_file_mono"]:
         # FileResponse를 위한 별도 엔드포인트 URL을 생성하거나,
         # 여기서는 output_file 경로를 직접 전달 (보안상 좋지 않음, 임시)
         # response["download_url"] = f"/api/translate/download/{job_id}" # 예시
@@ -283,34 +302,52 @@ async def get_translation_status(job_id: str, background_tasks: BackgroundTasks)
     return response
 # --- 상태 조회 엔드포인트 끝 ---
 
-# --- (선택 사항) 다운로드 엔드포인트 추가 --- 
+# --- 기존 다운로드 엔드포인트 수정 (mono 용) ---
 @app.get("/api/translate/download/{job_id}")
-async def download_translated_pdf(job_id: str, background_tasks: BackgroundTasks):
+async def download_translated_pdf_mono(job_id: str): # 함수 이름 명확화 (선택 사항), background_tasks 제거
     status_info = job_status.get(job_id)
-    if not status_info or status_info["status"] != "Done" or not status_info["output_file"]:
-        raise HTTPException(status_code=404, detail="Translated file not found or job not completed.")
+    # output_file_mono 키 사용
+    if not status_info or status_info["status"] != "Done" or not status_info.get("output_file_mono"):
+        raise HTTPException(status_code=404, detail="Translated file (mono) not found or job not completed.")
 
-    output_file_path = Path(status_info["output_file"])
+    output_file_path = Path(status_info["output_file_mono"])
     if not output_file_path.exists():
-         raise HTTPException(status_code=404, detail="Translated file not found on server.")
+         job_status.pop(job_id, None)
+         raise HTTPException(status_code=404, detail="Translated file (mono) not found on server.")
 
-    # 원본 파일명 추정 (job_id만으로는 알 수 없으므로 일반적인 이름 사용)
-    download_filename = f"{job_id}_translated.pdf"
+    download_filename = f"{job_id}_translated_mono.pdf" # 파일명 명시
 
-    # 파일 전송 후 임시 파일 및 상태 정보 삭제 예약
-    background_tasks.add_task(os.remove, output_file_path)
-    dual_output_path = TEMP_DIR / f"{output_file_path.stem.replace('-mono','')}-dual.pdf"
-    if dual_output_path.exists():
-        background_tasks.add_task(os.remove, dual_output_path)
-    # 상태 정보도 삭제
-    background_tasks.add_task(job_status.pop, job_id, None)
+    # 파일 삭제 로직 없음
 
     return FileResponse(
         path=output_file_path,
         filename=download_filename,
         media_type='application/pdf'
     )
-# --- 다운로드 엔드포인트 끝 ---
+
+# --- 새 다운로드 엔드포인트 추가 (dual 용) ---
+@app.get("/api/translate/download/{job_id}/dual")
+async def download_translated_pdf_dual(job_id: str):
+    status_info = job_status.get(job_id)
+    # output_file_dual 키 사용
+    if not status_info or status_info["status"] != "Done" or not status_info.get("output_file_dual"):
+        raise HTTPException(status_code=404, detail="Translated file (dual) not found or job not completed.")
+
+    output_file_path = Path(status_info["output_file_dual"])
+    if not output_file_path.exists():
+         # dual 파일은 없을 수도 있으므로 상태 제거는 하지 않음 (mono는 있을 수 있음)
+         raise HTTPException(status_code=404, detail="Translated file (dual) not found on server.")
+
+    download_filename = f"{job_id}_translated_dual.pdf" # 파일명 명시
+
+    # 파일 삭제 로직 없음
+
+    return FileResponse(
+        path=output_file_path,
+        filename=download_filename,
+        media_type='application/pdf'
+    )
+# --- 다운로드 엔드포인트 추가 끝 ---
 
 if __name__ == "__main__":
     # 개발 환경에서는 uvicorn 직접 실행

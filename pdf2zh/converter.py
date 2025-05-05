@@ -5,7 +5,7 @@ import unicodedata
 import asyncio
 from enum import Enum
 from string import Template
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 from pdfminer.converter import PDFConverter
@@ -346,29 +346,50 @@ class TranslateConverter(PDFConverterEx):
 
         # worker 함수는 asyncio.run 유지
         @retry(wait=wait_fixed(1))
-        def worker(s: str):
+        async def worker(s: str):
             if not s.strip() or re.match(r"^\{v\d+\}$", s):
                 return s
             try:
-                # 비동기 translate 메서드 호출을 위해 asyncio.run 사용
-                return asyncio.run(self.translator.translate(s))
+                return await self.translator.translate(s)
             except Exception as e:
                 log.exception(f"Error in worker translating '{s[:50]}...': {e}")
-                raise # 오류를 다시 발생시켜 map에서 처리되도록 함
+                return s # 오류 시 원본 반환
 
-        # ThreadPoolExecutor 로직 복원
-        news = []
+        async def run_workers_concurrently():
+            loop = asyncio.get_running_loop()
+            tasks = []
+            for s in sstk:
+                 # worker 코루틴 생성 시 prompt_options 제거
+                 tasks.append(loop.create_task(worker(s)))
+            # 모든 작업이 완료될 때까지 기다리고 결과 수집
+            return await asyncio.gather(*tasks, return_exceptions=True)
+
+        async def run_workers_sequentially():
+            results_seq = []
+            for s in sstk:
+                # worker 호출 시 prompt_options 제거
+                result = await worker(s)
+                results_seq.append(result)
+            return results_seq
+
         try:
-            with concurrent.futures.ThreadPoolExecutor(
-                max_workers=self.thread
-            ) as executor:
-                # map을 사용하여 각 sstk 항목에 대해 worker 함수 실행
-                news = list(executor.map(worker, sstk))
+            if self.thread > 0:
+                log.warning("Running translation sequentially due to complexity with threads and async worker.")
+                results = asyncio.run(run_workers_sequentially())
+
         except Exception as e:
-            log.exception(f"Error during ThreadPoolExecutor execution: {e}")
-            # 실패 시 빈 리스트나 부분 결과 반환 고려?
-            # 일단 오류를 전파하지 않고 빈 리스트로 진행
-            news = sstk # 번역 실패 시 원본 사용 또는 빈 리스트 등 처리 필요
+            log.exception(f"Error during translation execution: {e}")
+            # 오류 발생 시 results는 초기값 또는 부분 결과 유지
+
+        # 오류 처리: asyncio.gather에서 반환된 예외 처리 (현재는 순차 실행만 사용)
+        processed_results = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                log.error(f"Error during translation for segment {i}: {res}")
+                processed_results.append(sstk[i]) # 오류 시 원본 사용
+            else:
+                processed_results.append(res)
+        results = processed_results
 
         ############################################################
         # C. 新文档排版 (동기 방식 유지)
@@ -395,7 +416,7 @@ class TranslateConverter(PDFConverterEx):
         def gen_op_line(x, y, xlen, ylen, linewidth):
             return f"ET q 1 0 0 1 {x:f} {y:f} cm [] 0 d 0 J {linewidth:f} w 0 0 m {xlen:f} {ylen:f} l S Q BT "
 
-        for id, new in enumerate(news):
+        for id, new in enumerate(results):
             x: float = pstk[id].x                       # 段落初始横坐标
             y: float = pstk[id].y                       # 段落初始纵坐标
             x0: float = pstk[id].x0                     # 段落左边界

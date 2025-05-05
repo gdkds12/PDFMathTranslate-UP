@@ -1,7 +1,7 @@
 "use client"; // Add this directive for client-side interactivity
 
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowUpTrayIcon, DocumentArrowDownIcon, InformationCircleIcon, CheckCircleIcon, XCircleIcon, ClockIcon } from '@heroicons/react/24/outline'; // Import icons
+import { ArrowUpTrayIcon, DocumentArrowDownIcon, InformationCircleIcon, CheckCircleIcon, XCircleIcon, ClockIcon, QuestionMarkCircleIcon } from '@heroicons/react/24/outline'; // Import icons
 import dynamic from 'next/dynamic'; // Import dynamic
 import type { PdfPreviewProps } from '@/components/PdfPreview'; // Import the props type
 import { pdfjs } from 'react-pdf'; // Import pdfjs here
@@ -27,6 +27,8 @@ export default function Home() {
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null); // 폴링 인터벌 ID 저장
   // --- 상태 폴링 끝 ---
 
+  const [customInstructions, setCustomInstructions] = useState<string>(''); // <<< 상태 변수 복원
+
   // Set the worker source globally when the page mounts on the client
   // Use useEffect to ensure it runs only once on the client side
   useEffect(() => {
@@ -40,8 +42,10 @@ export default function Home() {
       setErrorDetail(null);
       setTranslatedFileUrl(null);
       setJobId(null); // 이전 작업 정보 초기화
+      setCustomInstructions(''); // <<< 파일 변경 시 초기화 복원
       setCurrentPage(0);
       setTotalPages(0);
+
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
         pollingIntervalRef.current = null;
@@ -81,7 +85,6 @@ export default function Home() {
 
       if (data.status === 'Done') {
         console.log("Translation done, stopping polling.");
-        setTranslatedFileUrl(`http://localhost:8000/api/translate/download/${currentJobId}`);
         stopPolling();
         setIsProcessing(false);
       } else if (data.status === 'Error') {
@@ -145,6 +148,7 @@ export default function Home() {
     if (pageRange.trim()) {
       formData.append('pages', pageRange.trim());
     }
+    formData.append('custom_instructions', customInstructions);
 
     try {
       // 백엔드에 작업 시작 요청
@@ -252,7 +256,7 @@ export default function Home() {
             </label>
           </div>
 
-          {/* Page Range Input */}
+          {/* 2. Page Range Input */}
           <div>
             <label htmlFor="page-range" className="block text-sm font-semibold text-gray-700 mb-2">2. 페이지 범위 (선택)</label>
             <input
@@ -266,6 +270,22 @@ export default function Home() {
             />
             <p className="text-xs text-gray-500 mt-1">쉼표(,)로 구분, 하이픈(-)으로 범위 지정</p>
           </div>
+
+          {/* --- 3. 세부 지침 추가 (복원 및 번호 수정) --- */}
+          <div>
+             <label htmlFor="customInstructions" className="block text-sm font-semibold text-gray-700 mb-2">3. 세부 지침 (선택)</label>
+             <textarea
+               id="customInstructions"
+               name="customInstructions"
+               rows={3}
+               placeholder="번역 스타일, 특정 단어 처리 방식 등 추가적인 지시사항을 입력하세요. (예: '모든 인용구는 원문 그대로 유지해주세요', 'Chapter는 장으로 번역해주세요')"
+               value={customInstructions}
+               onChange={(e) => setCustomInstructions(e.target.value)}
+               disabled={isProcessing}
+               className={`block w-full rounded-md border-0 py-1.5 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-blue-600 sm:text-sm sm:leading-6 transition ${isProcessing ? 'bg-gray-100 cursor-not-allowed opacity-50' : 'bg-white'}`}
+             />
+           </div>
+           {/* --- 세부 지침 끝 --- */}
 
           {/* Translate Button */}
           <div className="pt-2">
@@ -300,23 +320,35 @@ export default function Home() {
               <p className="text-sm text-red-600 bg-red-50 p-3 rounded-md border border-red-200">{errorDetail}</p>
             )}
 
-            {/* 다운로드 버튼 표시 */}
-            {status === 'Done' && translatedFileUrl && (
-              <div className="text-center">
+            {/* --- Download Buttons (Modified) --- */}
+            {status === 'Done' && jobId && (
+              <div className="text-center space-x-6"> {/* 간격 늘림 (space-x-4 -> space-x-6) */} 
+                 {/* Mono Download Button */}
                 <a
-                  href={translatedFileUrl}
-                  download
+                  href={`http://localhost:8000/api/translate/download/${jobId}`}
+                  download // Add download attribute for direct download
                   className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 transition"
                 >
                   <DocumentArrowDownIcon className="-ml-1 mr-2 h-5 w-5" />
-                  번역된 PDF 다운로드
+                  번역본(Mono) 다운로드
+                </a>
+                 {/* Dual Download Button */}
+                 <a
+                  href={`http://localhost:8000/api/translate/download/${jobId}/dual`}
+                  download
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition" // Different color for distinction
+                >
+                  <DocumentArrowDownIcon className="-ml-1 mr-2 h-5 w-5" />
+                  원본+번역본(Dual) 다운로드
                 </a>
               </div>
             )}
+            {/* --- Download Buttons End --- */}
 
-            {/* Dynamically loaded PDF Preview */}
-            {status === 'Done' && translatedFileUrl && (
-                <PdfPreview fileUrl={translatedFileUrl} onError={handlePreviewError} />
+            {/* PDF Preview */}
+            {status === 'Done' && jobId && (
+                 // Preview still uses the mono version by default
+                 <PdfPreview fileUrl={`http://localhost:8000/api/translate/download/${jobId}`} onError={handlePreviewError} />
             )}
 
             {/* 에러 메시지 표시 (Unified) */}
