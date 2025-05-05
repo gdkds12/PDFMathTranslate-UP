@@ -17,7 +17,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Add build-essential if any dependencies require compilation
 # Add git if any dependencies are fetched from git repos
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-venv git build-essential \
+    python3 python3-pip python3-venv git build-essential libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Upgrade pip
