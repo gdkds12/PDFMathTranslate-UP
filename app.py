@@ -392,7 +392,7 @@ def perform_translation_sync(
             logger.info(f"[Job: {job_id}] Released translation semaphore.")
         # === 해제 완료 ===
 
-        # --- 기존 finally 내용 (상태 업데이트, 임시 파일 정리, 로그 추출) ---
+        # --- 상태 업데이트 및 로깅 ---
         current_status = job_status.get(job_id, {}).get("status", "Unknown")
         if current_status != "Unknown":
              end_time = time.time()
@@ -400,29 +400,45 @@ def perform_translation_sync(
                  job_status[job_id]["end_time"] = end_time
              logger.info(f"[Job: {job_id}] Process finished with status '{current_status}' in {end_time - start_time:.2f} seconds.")
 
-        # 임시 파일 정리
-        logger.info(f"[Job: {job_id}] Cleaning up temporary files...")
-        # input 파일 (오류 시 또는 성공 시 이동 후 여기서는 삭제 시도 X -> 성공시 이동되므로 오류시에만 삭제)
-        if input_path.exists() and job_status.get(job_id, {}).get("status") == "Error":
-            try: os.remove(input_path)
-            except Exception as e: logger.error(f"[Job: {job_id}] Error removing temp input file {input_path}: {e}")
-        # mono 파일 (성공 시 이동, 오류 시 남아있을 수 있음)
-        if output_path and output_path.exists():
-            try: os.remove(output_path)
-            except Exception as e: logger.error(f"[Job: {job_id}] Error removing temp mono file {output_path}: {e}")
-        # dual 파일 (성공 시 이동, 오류 시 또는 생성 안될 수 있음)
-        if dual_output_path and dual_output_path.exists():
-            try: os.remove(dual_output_path)
-            except Exception as e: logger.error(f"[Job: {job_id}] Error removing temp dual file {dual_output_path}: {e}")
+        # --- 임시 파일 정리 (Robust) ---
+        logger.info(f"[Job: {job_id}] Cleaning up temporary files from {TEMP_DIR}...")
 
-        # 로그 추출 및 저장
+        # 1. 임시 입력 파일 정리 (항상 시도)
+        # input_path 변수는 함수 시작 시 정의되므로 None이 아님
+        if input_path.exists():
+            try:
+                os.remove(input_path)
+                logger.debug(f"[Job: {job_id}] Removed temporary input file: {input_path}")
+            except Exception as e:
+                logger.error(f"[Job: {job_id}] Error removing temp input file {input_path}: {e}")
+
+        # 2. 임시 모노 출력 파일 정리 (존재 및 할당 여부 확인)
+        # output_path는 try 블록에서 할당되지 않았을 수 있음 (초기값 None)
+        if output_path is not None and output_path.exists():
+            try:
+                os.remove(output_path)
+                logger.debug(f"[Job: {job_id}] Removed temporary mono file: {output_path}")
+            except Exception as e:
+                logger.error(f"[Job: {job_id}] Error removing temp mono file {output_path}: {e}")
+
+        # 3. 임시 듀얼 출력 파일 정리 (존재 및 할당 여부 확인)
+        # dual_output_path도 try 블록에서 할당되지 않았을 수 있음 (초기값 None)
+        if dual_output_path is not None and dual_output_path.exists():
+            try:
+                os.remove(dual_output_path)
+                logger.debug(f"[Job: {job_id}] Removed temporary dual file: {dual_output_path}")
+            except Exception as e:
+                logger.error(f"[Job: {job_id}] Error removing temp dual file {dual_output_path}: {e}")
+        # --- 임시 파일 정리 끝 ---
+
+        # --- 로그 추출 및 저장 ---
         if job_storage_path and final_folder_name:
              output_log_filename = f"{final_folder_name}_log.txt"
              output_log_path = job_storage_path / output_log_filename
              extract_job_log(job_id, log_file_path, output_log_path)
         else:
              logger.warning(f"[Job: {job_id}] Final storage path not defined, skipping log extraction.")
-        # --- 기존 finally 끝 ---
+        # --- 로그 저장 끝 ---
 # --- perform_translation_sync 함수 끝 ---
 
 # --- translate_pdf 엔드포인트 ---
