@@ -251,7 +251,7 @@ def extract_job_log(job_id: str, source_log_path: Path, output_log_path: Path):
         logger.exception(f"Failed to extract logs for job {job_id}: {e}")
 # --- 로그 추출 함수 끝 ---
 
-# --- perform_translation_sync 함수 수정 (세마포 적용) ---
+# --- perform_translation_sync 함수 수정 (변수 초기화 위치 변경) ---
 def perform_translation_sync(
     input_path: Path,
     job_id: str,
@@ -264,7 +264,9 @@ def perform_translation_sync(
     estimated_total_time: float | None = None
     job_storage_path: Path | None = None
     final_folder_name: str | None = None
-    acquired_semaphore = False # <<< 세마포 획득 여부 플래그
+    acquired_semaphore = False
+    output_path: Path | None = None
+    dual_output_path: Path | None = None
 
     logger.info(f"[Job: {job_id}] Waiting to acquire translation semaphore (available: {translation_semaphore._value})...") # 내부 값 확인 (디버깅용)
     try:
@@ -306,13 +308,13 @@ def perform_translation_sync(
             raise RuntimeError(error_msg)
 
         # --- 실제 번역 로직 (기존 try 블록 내용) ---
-        output_path = None
-        dual_output_path = None
+        # output_path = None # <<< 여기서는 제거
+        # dual_output_path = None # <<< 여기서는 제거
 
         # 출력 파일 경로 설정
         expected_output_filename = f"{input_path.stem}-mono.pdf"
-        output_path = TEMP_DIR / expected_output_filename
-        dual_output_path = TEMP_DIR / f"{input_path.stem}-dual.pdf"
+        output_path = TEMP_DIR / expected_output_filename # 실제 Path 할당
+        dual_output_path = TEMP_DIR / f"{input_path.stem}-dual.pdf" # 실제 Path 할당
         if output_path.exists(): os.remove(output_path)
         if dual_output_path.exists(): os.remove(dual_output_path)
 
