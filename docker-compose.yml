@@ -1,43 +1,30 @@
 # docker-compose.yml
-version: '3.8'
+# version: '3.8' # 이 줄은 제거하거나 주석 처리하는 것이 좋습니다 (경고 메시지 참고)
 
 services:
   backend:
-    build:
-      context: . # Build context is the root directory
-      dockerfile: Dockerfile # Use the Dockerfile in the root directory
+    build: .
     ports:
       - "8000:8000"
+    env_file:
+      - .env
     volumes:
-      # Mount .env file for Azure credentials
-      - ./.env:/app/.env
-      # Mount storage directory for persistent output
       - ./storage:/app/storage
-      # Optional: Mount temp_files for debugging, remove in production
-      # - ./temp_files:/app/temp_files
-    environment:
-      # Pass necessary environment variables if not solely relying on .env
-      # e.g., AZURE_DEPLOYMENT_1_NAME: ${AZURE_DEPLOYMENT_1_NAME}
-      PYTHONUNBUFFERED: 1 # Already set in Dockerfile, but good practice
+      - ./logs:/app/logs
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all # Use all available GPUs, or specify a number e.g., 1
+              count: all
               capabilities: [gpu]
-    restart: unless-stopped # Optional: Add restart policy
-    # Optional: Add healthcheck
-    # healthcheck:
-    #   test: ["CMD", "curl", "-f", "http://localhost:8000/"]
-    #   interval: 30s
-    #   timeout: 10s
-    #   retries: 3
+    restart: unless-stopped
+    # Python 코드가 .env 파일을 직접 읽는 경우,
+    # 이 옵션 대신 환경 변수를 사용하도록 코드를 수정해야 할 수도 있습니다.
+    # 하지만 python-dotenv는 보통 환경 변수가 우선하므로 그대로 동작할 가능성이 높습니다.
 
   frontend: # <<< 프론트엔드 서비스 추가
-    build:
-      context: ./frontend # Build context is the frontend directory
-      dockerfile: Dockerfile # Use the Dockerfile inside the frontend directory
+    build: ./frontend
     ports:
       - "3000:3000" # Expose port 3000 for the frontend
     environment:
