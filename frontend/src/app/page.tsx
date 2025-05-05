@@ -145,7 +145,8 @@ export default function Home() {
   // --- 폴링 함수 수정 ---
   const pollStatus = async (currentJobId: string) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/translate/status/${currentJobId}`);
+      // 상대 경로 사용으로 수정
+      const response = await fetch(`/api/translate/status/${currentJobId}`);
       if (!response.ok) {
         if (response.status === 404) {
           console.error(`Job ${currentJobId} not found.`);
@@ -183,7 +184,8 @@ export default function Home() {
 
       if (newStatus === 'Done') {
         console.log("Translation done, stopping polling.");
-        setTranslatedFileUrl(`http://localhost:8000/api/translate/download/${currentJobId}`);
+        // 다운로드 URL도 상대 경로 사용 고려 (또는 NEXT_PUBLIC_API_URL 사용)
+        setTranslatedFileUrl(`/api/translate/download/${currentJobId}`); // <<< 상대 경로로 변경
         stopPolling();
         // setDisplayRemainingTime(0); // useEffect가 처리
         setIsProcessing(false);
@@ -248,50 +250,61 @@ export default function Home() {
     setCurrentPage(0);
     setTotalPages(0);
     setIsProcessing(true);
-    // setDisplayRemainingTime(null); // useEffect가 처리
-    // stopTimer(); // 제거됨
+
+    // --- 예상 시간 관련 상태 초기화 ---
+    setBackendEstimatedRemainingTime(null);
+    setCalculationTimestamp(null);
+    // --- 초기화 끝 ---
 
     const formData = new FormData();
     formData.append('pdf', selectedFile);
-    if (pageRange.trim()) {
-      formData.append('pages', pageRange.trim());
+    if (pageRange) {
+      formData.append('pages', pageRange);
     }
+    // --- 커스텀 지침 추가 ---
     formData.append('custom_instructions', customInstructions);
+    // --- 추가 끝 ---
 
     try {
-      const response = await fetch('http://localhost:8000/api/translate', {
+      // API 호출 시 상대 경로 사용!
+      const response = await fetch('/api/translate', { // <<< 상대 경로 확인/수정
         method: 'POST',
         body: formData,
       });
 
       if (!response.ok) {
-        let detail = `Failed to start translation (HTTP ${response.status})`;
-        try {
-          const errorData = await response.json();
-          detail = errorData.detail || detail;
-        } catch (jsonError) {
-          console.error("Failed to parse start error response JSON", jsonError);
-        }
-        throw new Error(detail);
-      }
+        const errorData = await response.json().catch(() => ({ detail: `HTTP error ${response.status}` }));
+        setStatus('Error');
+        setErrorDetail(`Error starting translation: ${errorData.detail || 'Unknown error'}`);
+        setIsProcessing(false);
+        return;
+      } 
 
       const data = await response.json();
       if (data.job_id) {
-        setStatus('Starting');
-        startPolling(data.job_id);
+        setStatus('Starting'); // 상태를 Starting으로 변경
+        startPolling(data.job_id); // 폴링 시작
       } else {
-        throw new Error("백엔드에서 작업 ID를 반환하지 않았습니다.");
+        setStatus('Error');
+        setErrorDetail('Failed to get job ID from server.');
+        setIsProcessing(false);
       }
 
     } catch (error) {
       console.error('Error starting translation job:', error);
-      setStatus('Error');
-      setErrorDetail((error as Error).message || '알 수 없는 오류가 발생했습니다.');
-      setTranslatedFileUrl(null);
+      let errorMessage = '번역 작업을 시작하는 중 오류 발생';
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+          errorMessage += ': 네트워크 연결을 확인하거나 CORS 설정을 확인하세요.';
+      } else if (error instanceof Error) { // 에러 타입을 좀 더 명확히
+         errorMessage += `: ${error.message}`;
+      }
+      setStatus('Error'); // 상태 업데이트 시 오류 메시지 포함
+      setErrorDetail(errorMessage);
       setIsProcessing(false);
-      // 폴링 시작 전 에러이므로 stopPolling 필요 없음
-      setBackendEstimatedRemainingTime(null); // 에러 시 관련 상태 초기화
-      setCalculationTimestamp(null);
+      setTranslatedFileUrl(null);
+    } finally {
+      // 업로드 실패 시에도 isProcessing을 false로 설정할 수 있도록 finally 사용 고려
+      // 현재 로직에서는 try-catch 블록 내에서 처리 중
     }
   };
 
