@@ -33,7 +33,7 @@ COPY . /app
 
 # 6. Install the project and its dependencies using pip
 # Now pip/hatchling can find the 'pdf2zh' directory and other necessary files
-RUN pip install --no-cache-dir .
+RUN pip install -v --no-cache-dir .
 
 # 7. Expose the port the app runs on
 EXPOSE 8000
