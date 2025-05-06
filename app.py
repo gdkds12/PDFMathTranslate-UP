@@ -18,6 +18,19 @@ import string # <<< 추가: 유효한 문자 확인용
 from logging.handlers import RotatingFileHandler # <<< 추가: 파일 로깅 핸들러
 import threading # <<< threading 모듈 임포트
 
+# Attempt to preload ONNX Runtime CUDNN DLLs (as per ONNX Runtime documentation)
+try:
+    import onnxruntime as ort
+    # ort.preload_dlls() # This function might not exist or be needed in all versions/setups.
+    # Instead, we will rely on the pdf2zh.doclayout module to correctly initialize ORT.
+    # However, logging the available providers here can be insightful.
+    logger.info(f"App-level: ONNX Runtime version: {ort.__version__}")
+    logger.info(f"App-level: Available ONNX Runtime providers: {ort.get_available_providers()}")
+except ImportError:
+    logger.warning("App-level: onnxruntime could not be imported.")
+except Exception as e:
+    logger.warning(f"App-level: Error during onnxruntime preload or info logging: {e}")
+
 # .env 파일 로드 (translator.py에서도 로드하지만, 앱 시작 시에도 명시적으로 로드하는 것이 안전)
 load_dotenv()
 

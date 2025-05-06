@@ -31,11 +31,13 @@ WORKDIR /app
 # This includes pyproject.toml, README.md, the pdf2zh directory, etc.
 COPY . /app
 
-# 6. Install onnxruntime-gpu FIRST and exclusively
-RUN pip install -v --no-cache-dir onnxruntime-gpu==1.20.0
+# 6. Install the project and its dependencies (this might install CPU onnxruntime)
+RUN pip install -v --no-cache-dir .
 
-# 7. Install the main project (pdf2zh) without its own dependencies first
-RUN pip install -v --no-cache-dir --no-deps .
+# 7. Explicitly uninstall any CPU onnxruntime and reinstall/ensure onnxruntime-gpu
+#    This attempts to fix the potential conflict or overwrite issue.
+RUN pip uninstall -y onnxruntime onnxruntime-gpu # Uninstall both to be sure
+RUN pip install -v --no-cache-dir onnxruntime-gpu==1.20.0 # Reinstall the desired GPU version
 
 # 8. Install other direct dependencies of pdf2zh from pyproject.toml, excluding onnxruntime and onnxruntime-gpu
 #    babeldoc and other dependencies will pull their own sub-dependencies (hopefully not conflicting onnxruntime)
