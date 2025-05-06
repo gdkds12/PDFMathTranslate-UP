@@ -144,9 +144,10 @@ export default function Home() {
 
   // --- 폴링 함수 수정 ---
   const pollStatus = async (currentJobId: string) => {
+    const apiUrlBase = process.env.NEXT_PUBLIC_API_URL || ''; // 환경 변수 읽기
     try {
-      // 상대 경로 사용으로 수정
-      const response = await fetch(`/api/translate/status/${currentJobId}`);
+      // 환경 변수 사용으로 수정
+      const response = await fetch(`${apiUrlBase}/api/translate/status/${currentJobId}`);
       if (!response.ok) {
         if (response.status === 404) {
           console.error(`Job ${currentJobId} not found.`);
@@ -184,8 +185,8 @@ export default function Home() {
 
       if (newStatus === 'Done') {
         console.log("Translation done, stopping polling.");
-        // 다운로드 URL도 상대 경로 사용 고려 (또는 NEXT_PUBLIC_API_URL 사용)
-        setTranslatedFileUrl(`/api/translate/download/${currentJobId}`); // <<< 상대 경로로 변경
+        // 다운로드 URL에도 환경 변수 사용
+        setTranslatedFileUrl(`${apiUrlBase}/api/translate/download/${currentJobId}`);
         stopPolling();
         // setDisplayRemainingTime(0); // useEffect가 처리
         setIsProcessing(false);
@@ -256,6 +257,7 @@ export default function Home() {
     setCalculationTimestamp(null);
     // --- 초기화 끝 ---
 
+    const apiUrlBase = process.env.NEXT_PUBLIC_API_URL || ''; // 환경 변수 읽기
     const formData = new FormData();
     formData.append('pdf', selectedFile);
     if (pageRange) {
@@ -266,8 +268,8 @@ export default function Home() {
     // --- 추가 끝 ---
 
     try {
-      // API 호출 시 상대 경로 사용!
-      const response = await fetch('/api/translate', { // <<< 상대 경로 확인/수정
+      // API 호출 시 환경 변수 사용!
+      const response = await fetch(`${apiUrlBase}/api/translate`, { // <<< 환경 변수 사용
         method: 'POST',
         body: formData,
       });
