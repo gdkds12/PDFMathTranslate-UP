@@ -18,19 +18,6 @@ import string # <<< 추가: 유효한 문자 확인용
 from logging.handlers import RotatingFileHandler # <<< 추가: 파일 로깅 핸들러
 import threading # <<< threading 모듈 임포트
 
-# Attempt to preload ONNX Runtime CUDNN DLLs (as per ONNX Runtime documentation)
-try:
-    import onnxruntime as ort
-    # ort.preload_dlls() # This function might not exist or be needed in all versions/setups.
-    # Instead, we will rely on the pdf2zh.doclayout module to correctly initialize ORT.
-    # However, logging the available providers here can be insightful.
-    logger.info(f"App-level: ONNX Runtime version: {ort.__version__}")
-    logger.info(f"App-level: Available ONNX Runtime providers: {ort.get_available_providers()}")
-except ImportError:
-    logger.warning("App-level: onnxruntime could not be imported.")
-except Exception as e:
-    logger.warning(f"App-level: Error during onnxruntime preload or info logging: {e}")
-
 # .env 파일 로드 (translator.py에서도 로드하지만, 앱 시작 시에도 명시적으로 로드하는 것이 안전)
 load_dotenv()
 
@@ -68,8 +55,18 @@ pdf2zh_logger = logging.getLogger('pdf2zh')
 # pdf2zh_logger.addHandler(file_handler)
 # pdf2zh_logger.propagate = False # 루트로 전파 막기
 
-logger.info("Application starting up. Logging configured.") # 시작 로그
+logger.info("Initial application logging configured.") # 초기 로거 설정 완료 로그
 # --- 로깅 설정 끝 ---
+
+# Attempt to log ONNX Runtime info AFTER logger is configured
+try:
+    import onnxruntime as ort
+    logger.info(f"App-level: ONNX Runtime version: {ort.__version__}")
+    logger.info(f"App-level: Available ONNX Runtime providers: {ort.get_available_providers()}")
+except ImportError:
+    logger.warning("App-level: onnxruntime could not be imported during initial check.")
+except Exception as e:
+    logger.warning(f"App-level: Error during initial onnxruntime info logging: {e}")
 
 # --- 동시성 제어를 위한 세마포 생성 ---
 MAX_CONCURRENT_JOBS = 10
