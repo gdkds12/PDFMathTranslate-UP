@@ -1,7 +1,7 @@
 # Dockerfile (Revised for PEP 621 / Hatchling, No Poetry Install)
 
-# 1. Base Image: Use the same CUDA base for GPU support
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+# 1. Base Image: Use a -devel image for full CUDA toolkit and cuDNN support
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
 
 # 2. Environment Variables
 ENV PYTHONUNBUFFERED=1 \
