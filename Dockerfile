@@ -31,8 +31,10 @@ WORKDIR /app
 # This includes pyproject.toml, README.md, the pdf2zh directory, etc.
 COPY . /app
 
-# 6. Install the project and its dependencies using pip
-# Now pip/hatchling can find the 'pdf2zh' directory and other necessary files
+# 6. Install onnxruntime-gpu FIRST, then the rest of the project
+RUN pip install -v --no-cache-dir onnxruntime-gpu==1.20.0
+
+# Install the project (which includes pdf2zh and its other dependencies)
 RUN pip install -v --no-cache-dir .
 
 # 7. Expose the port the app runs on
