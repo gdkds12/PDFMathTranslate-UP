@@ -111,7 +111,8 @@ origins = [
     "https://pdftranslator.site", # 실제 서비스 도메인 추가!
     "http://localhost",      # 경우에 따라 필요할 수 있음
     "http://127.0.0.1:3000",
-    "http://desktop.tail1aa295.ts.net:3000" # <<< 노트북/모바일 접속을 위한 Origin 추가
+    "http://desktop.tail1aa295.ts.net:3000", # <<< 노트북/모바일 접속을 위한 Origin 추가
+    "http://100.106.6.49:3000"
 ]
 
 app.add_middleware(
