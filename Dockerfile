@@ -31,14 +31,43 @@ WORKDIR /app
 # This includes pyproject.toml, README.md, the pdf2zh directory, etc.
 COPY . /app
 
-# 6. Install onnxruntime-gpu FIRST, then the rest of the project
+# 6. Install onnxruntime-gpu FIRST and exclusively
 RUN pip install -v --no-cache-dir onnxruntime-gpu==1.20.0
 
-# Install the project (which includes pdf2zh and its other dependencies)
-RUN pip install -v --no-cache-dir .
+# 7. Install the main project (pdf2zh) without its own dependencies first
+RUN pip install -v --no-cache-dir --no-deps .
 
-# 7. Expose the port the app runs on
+# 8. Install other direct dependencies of pdf2zh from pyproject.toml, excluding onnxruntime and onnxruntime-gpu
+#    babeldoc and other dependencies will pull their own sub-dependencies (hopefully not conflicting onnxruntime)
+RUN pip install -v --no-cache-dir \
+    requests \
+    "pymupdf<1.25.3" \
+    tqdm \
+    tenacity \
+    numpy \
+    ollama \
+    xinference-client \
+    deepl \
+    "openai>=1.0.0" \
+    "azure-ai-translation-text<=1.0.1" \
+    gradio \
+    huggingface_hub \
+    tencentcloud-sdk-python-tmt \
+    "pdfminer.six>=20240706" \
+    "gradio_pdf>=0.0.21" \
+    pikepdf \
+    "peewee>=3.17.8" \
+    fontTools \
+    "babeldoc>=0.1.22,<0.3.0" \
+    rich \
+    fastapi \
+    "uvicorn[standard]" \
+    python-multipart \
+    aiofiles \
+    python-dotenv
+
+# 9. Expose the port the app runs on
 EXPOSE 8000
 
-# 8. Command to run the application
+# 10. Command to run the application
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
