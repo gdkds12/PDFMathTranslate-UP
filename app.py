@@ -573,6 +573,10 @@ async def download_translated_pdf(job_id: str):
     )
 # --- 다운로드 엔드포인트 끝 ---
 
+@app.get("/api/healthcheck")
+async def health_check():
+    return {"status": "ok", "message": "FastAPI is running and /api/healthcheck is reachable"}
+
 if __name__ == "__main__":
     # 개발 환경에서는 uvicorn 직접 실행
     # 프로덕션 환경에서는 gunicorn 등 사용 권장
